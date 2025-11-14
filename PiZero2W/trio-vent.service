@@ -1,0 +1,15 @@
+#
+# trio-vent
+#
+[Unit]
+Description=trio-vent 3 Motor Controller
+After=network-online.target
+
+[Service]
+SyslogIdentifier=trio-vent
+ExecStart=python /root/trio-vent.py
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,3 +1,5 @@
+#!/usr/bin/python
+# -*- coding:utf-8 -*-
 '''
 
  trio-vent  (c) 2025 Andreas Filsinger, GPL-Licence
@@ -43,6 +45,11 @@ from paho.mqtt import client as mqtt_client
 import json5
 import time
 
+CHAR_UP   = "\u2191"
+CHAR_DOWN = "\u2193"
+CHAR_LIKE = "\u2665"
+
+
 #
 # To the mqtt Broker this program is like a Device, 
 # subscribing-for and publish-this
@@ -72,10 +79,10 @@ topic_humidity       = "/status/humidity:0"
 
 device_Shelly   = "shelly1minig4-ccba97c08c34"
 
-topic_Switch    = "/status/input:0"
+topic_switch    = "/status/input:0"
 # sample Value = {"id":0,"state":false}
 
-topic_Relay    = "/command/switch:0"
+topic_relay    = "/command/switch:0"
 # sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
 
 
@@ -158,12 +165,12 @@ time_LIGHT          = 0
 #
 # WC
 #
-WC_Light            = False  # False=Light off 
-WC_Vent             = False  # False=Vent stopped
+WC_Light            = False    # False=Light off 
+WC_Vent             = False    # False=Vent stopped
 
-WC_Vent_Normal      = 31     # % Speed of Vent
-WC_Vent_Silent      = 23     # % Speed of Vent
-WC_Humidity         = 0      # actual Humidity Value
+WC_Vent_Normal      = 31       # % Speed of Vent
+WC_Vent_Silent      = 23       # % Speed of Vent
+WC_Humidity         = float(0) # actual Humidity Value
 
 #
 # KÜCHE
@@ -214,7 +221,7 @@ def pwm_vent_Z(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM0_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- print("Vent Z", percent, "%", client.publish(local_device_id + status_zuluft, payload=percent, qos=1))
+ print("MQTT" + CHAR_UP, status_zuluft, "Vent Z", percent, "%", client.publish(local_device_id + status_zuluft, payload=percent, qos=1))
  
 def pwm_vent_W(percent): 
  if percent>100:
@@ -222,24 +229,25 @@ def pwm_vent_W(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM1_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- print("Vent W", percent, "%", client.publish(local_device_id + status_wc, payload=percent, qos=1))
+ print("MQTT" + CHAR_UP, status_wc, "Vent W", percent, "%", client.publish(local_device_id + status_wc, payload=percent, qos=1))
 
 def power_vent_K(onoff):
  if onoff:
-  print(client.publish(device_Shelly + topic_Relay, "on"), "Küche vent on")
-  client.publish(local_device_id + status_kueche, payload="true", qos=1)
+  print("MQTT" + CHAR_UP, topic_relay, client.publish(device_Shelly + topic_relay, "on"), "Küche vent on")
+  print("MQTT" + CHAR_UP, status_kueche, client.publish(local_device_id + status_kueche, payload="true", qos=1))
  else:
-  print(client.publish(device_Shelly + topic_Relay, "off"), "Küche vent off")
-  client.publish(local_device_id + status_kueche, payload="false", qos=1)
-
+  print("MQTT" + CHAR_UP, topic_relay, client.publish(device_Shelly + topic_relay, "off"), "Küche vent off")
+  print("MQTT" + CHAR_UP, status_kueche, client.publish(local_device_id + status_kueche, payload="false", qos=1))
 
 def mqtt_event_message(client, userdata, message):
+
+    global KUECHE_Vent, WC_Light, time_OFF, WC_Humidity
 
     # command "Küche Vent" {"true"|"false"}
     if message.topic == local_device_id + cmd_kueche:
      # vent
      v = message.payload.decode()
-     print("MQTT Küche Vent", v)
+     print(CHAR_DOWN + "MQTT Küche Vent", v)
      if v=="true":
       pwm_vent_Z(100)
       KUECHE_Vent = True
@@ -251,22 +259,22 @@ def mqtt_event_message(client, userdata, message):
     # command "Automatic" {"true"|"false"}
     if message.topic == local_device_id + cmd_automatic:
      v = message.payload.decode()
-     print("MQTT Automatic", v)
+     print(CHAR_DOWN + "MQTT Automatic", v)
     
     # command "Zuluft Vent" {0..100}
     if message.topic == local_device_id + cmd_zuluft:
      v = message.payload.decode()
-     print("MQTT ZULUFT Vent", v)
+     print(CHAR_DOWN + "MQTT ZULUFT Vent", v)
 
     # command "WC Vent" {0..100}
     if message.topic == local_device_id + cmd_wc:
      v = message.payload.decode()
-     print("MQTT WC Vent", v)
+     print(CHAR_DOWN + "MQTT WC Vent", v)
     
     # Status change "WC-Lichtschalter" {"true"|"false"}
-    if message.topic == device_Shelly + topic_Switch:
+    if message.topic == device_Shelly + topic_switch:
      s = json5.loads(message.payload.decode())["state"]
-     print("MQTT WC-Licht ","´",s,"´",sep="")
+     print(CHAR_DOWN + "MQTT WC-Licht ","´",s,"´",sep="")
      if s:
       WC_Light = True
       time_OFF = 0
@@ -274,32 +282,32 @@ def mqtt_event_message(client, userdata, message):
       WC_Light = False
 
     # Change of "Humidity" {JSON} 
-    if message.topic==device_humidity+topic_humidity:
+    if message.topic == device_humidity+topic_humidity:
 
      payload = str(message.payload.decode("utf-8"))
      WC_Humidity = float(json5.loads(payload)["rh"])
-     print("MQTT Humidity",WC_Humidity, "%")
+     print(CHAR_DOWN + "MQTT Humidity", WC_Humidity, "%")
      
  
 def mqtt_event_connect(client, userdata, flags, rc):
     print("Connected with result code " + str(rc))
 
     # Remote Device Subscriptions
-    print(client.subscribe(device_humidity + topic_humidity, qos=1))
-    print(client.subscribe(device_Shelly + topic_Switch, qos=1))
+    print("MQTT" + CHAR_LIKE, topic_humidity, client.subscribe(device_humidity + topic_humidity, qos=1))
+    print("MQTT" + CHAR_LIKE, topic_switch, client.subscribe(device_Shelly + topic_switch, qos=1))
 
     # Own Subscriptions for me to serve
-    print(client.subscribe(local_device_id + cmd_automatic, qos=1))
-    print(client.subscribe(local_device_id + cmd_zuluft, qos=1))
-    print(client.subscribe(local_device_id + cmd_kueche, qos=1))
-    print(client.subscribe(local_device_id + cmd_wc, qos=1))
+    print("MQTT" + CHAR_LIKE, cmd_automatic, client.subscribe(local_device_id + cmd_automatic, qos=1))
+    print("MQTT" + CHAR_LIKE, cmd_zuluft, client.subscribe(local_device_id + cmd_zuluft, qos=1))
+    print("MQTT" + CHAR_LIKE, cmd_kueche, client.subscribe(local_device_id + cmd_kueche, qos=1))
+    print("MQTT" + CHAR_LIKE, cmd_wc, client.subscribe(local_device_id + cmd_wc, qos=1))
 
 # Connect to the MQTT Server
 
 print("MQTT connect ...")
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
-print(client.connect(mqtt_broker,1883))
+print(client.connect(mqtt_broker, 1883))
 trio_vent_sleep(3)
 
 # Vent Motor Speed up

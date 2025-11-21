@@ -66,29 +66,57 @@ kueche_vent = False
 canvas_need_update = False
 
 def k1_pressed():
- global kueche_vent, canvas_need_update
-
+ global kueche_vent
  print("KEY1")
- if not client.is_connected():
-  print(client.connect(mqtt_broker,1883),"Reconnect")
  if kueche_vent:
-  print("MQTT" + CHAR_UP, cmd_kueche, client.publish(device + cmd_kueche,"false"),"OFF");
+  print("MQTT" + CHAR_UP, cmd_kueche, client.publish(device + cmd_kueche,"false"),"OFF")
   kueche_vent = False
  else:
-  print("MQTT" + CHAR_UP, cmd_kueche, client.publish(device + cmd_kueche,"true"),"ON");
+  print("MQTT" + CHAR_UP, cmd_kueche, client.publish(device + cmd_kueche,"true"),"ON")
   kueche_vent = True
- canvas_need_update = True
 
 def k2_pressed():
- global canvas_need_update
+ global ZULUFT_Vent
  print("KEY2")
- canvas_need_update = True
+ # more Power on ZULUFT_Vent
+ match ZULUFT_Vent:
+  case 25:
+   ZULUFT_Vent=27
+  case 27:
+   ZULUFT_Vent=30
+  case 30:
+   ZULUFT_Vent=35
+  case 35:
+   ZULUFT_Vent=40
+  case 0:
+   ZULUFT_Vent=25
+ print("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
  
 def k3_pressed():
+ global ZULUFT_Vent
  print("KEY3")
+ # less Power on ZULUFT_Vent
+ match ZULUFT_Vent:
+  case 27:
+   ZULUFT_Vent=25
+  case 30:
+   ZULUFT_Vent=25
+  case 35:
+   ZULUFT_Vent=30
+  case 40:
+   ZULUFT_Vent=35
+  case 0:
+   ZULUFT_Vent=40
+ print("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
+ 
 def k4_pressed():
  print("KEY4")
-
+ # Power the WC_Vent for a few minutes
+ if WC_Vent==0:
+  print("MQTT" + CHAR_UP, cmd_wc, "60", client.publish(device + cmd_wc, payload=60, qos=1))
+ else:
+  print("MQTT" + CHAR_UP, cmd_wc, "0", client.publish(device + cmd_wc, payload=0, qos=1))
+  
 def mqtt_event_message(client, userdata, message):
    
     global canvas_need_update, humidity, WC_Vent, ZULUFT_Vent
@@ -108,7 +136,7 @@ def mqtt_event_message(client, userdata, message):
      
     # ZULUFT Vent message
     if message.topic == device + status_zuluft:
-     ZULUFT_Vent = message.payload.decode()
+     ZULUFT_Vent = int(message.payload.decode())
      print(CHAR_DOWN + "MQTT", status_zuluft, ZULUFT_Vent)
      canvas_need_update = True
 

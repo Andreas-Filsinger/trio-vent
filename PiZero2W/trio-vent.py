@@ -233,15 +233,15 @@ def pwm_vent_W(percent):
 
 def power_vent_K(onoff):
  if onoff:
-  print("MQTT" + CHAR_UP, topic_relay, client.publish(device_Shelly + topic_relay, "on"), "Küche vent on")
-  print("MQTT" + CHAR_UP, status_kueche, client.publish(local_device_id + status_kueche, payload="true", qos=1))
+  print("MQTT" + CHAR_UP, topic_relay, "on", client.publish(device_Shelly + topic_relay, payload="on", qos=1)) 
+  print("MQTT" + CHAR_UP, status_kueche, "true", client.publish(local_device_id + status_kueche, payload="true", qos=1))
  else:
-  print("MQTT" + CHAR_UP, topic_relay, client.publish(device_Shelly + topic_relay, "off"), "Küche vent off")
-  print("MQTT" + CHAR_UP, status_kueche, client.publish(local_device_id + status_kueche, payload="false", qos=1))
+  print("MQTT" + CHAR_UP, topic_relay, "off", client.publish(device_Shelly + topic_relay, payload="off", qos=1))
+  print("MQTT" + CHAR_UP, status_kueche, "false", client.publish(local_device_id + status_kueche, payload="false", qos=1))
 
 def mqtt_event_message(client, userdata, message):
 
-    global KUECHE_Vent, WC_Light, time_OFF, WC_Humidity
+    global KUECHE_Vent, WC_Light, time_OFF, WC_Humidity, nachlauf
 
     # command "Küche Vent" {"true"|"false"}
     if message.topic == local_device_id + cmd_kueche:
@@ -263,13 +263,18 @@ def mqtt_event_message(client, userdata, message):
     
     # command "Zuluft Vent" {0..100}
     if message.topic == local_device_id + cmd_zuluft:
-     v = message.payload.decode()
+     v = int(message.payload.decode())
      print(CHAR_DOWN + "MQTT ZULUFT Vent", v)
+     pwm_vent_Z(v)
 
-    # command "WC Vent" {0..100}
+    # command "WC Vent" {0..100} im Moment nur 0|60
     if message.topic == local_device_id + cmd_wc:
-     v = message.payload.decode()
+     v = int(message.payload.decode())
      print(CHAR_DOWN + "MQTT WC Vent", v)
+     if v==0:
+      nachlauf=1
+     else: 
+      time_OFF=-2
     
     # Status change "WC-Lichtschalter" {"true"|"false"}
     if message.topic == device_Shelly + topic_switch:
@@ -283,7 +288,6 @@ def mqtt_event_message(client, userdata, message):
 
     # Change of "Humidity" {JSON} 
     if message.topic == device_humidity+topic_humidity:
-
      payload = str(message.payload.decode("utf-8"))
      WC_Humidity = float(json5.loads(payload)["rh"])
      print(CHAR_DOWN + "MQTT Humidity", WC_Humidity, "%")

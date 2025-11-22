@@ -2,7 +2,7 @@
 # -*- coding:utf-8 -*-
 import sys
 import os
-import logging
+#import logging
 import epd2in7_V2
 import time
 from PIL import Image,ImageDraw,ImageFont
@@ -171,7 +171,7 @@ font_small = ImageFont.truetype("NotoSans-Bold.ttf", 18)
 font_normal = ImageFont.truetype("NotoSans-Bold.ttf", 25)
 font_huge = ImageFont.truetype("NotoSans-Bold.ttf", 30)
 
-logging.basicConfig(level=logging.DEBUG)
+#logging.basicConfig(level=logging.DEBUG)
 
 epd = epd2in7_V2.EPD()
 
@@ -212,22 +212,11 @@ def draw_canvas():
     epd.sleep()
     
 
-try:
-
-    canvas_need_update = True
-    while (True):
+canvas_need_update = True
+while (True):
 
      client.loop()
      if canvas_need_update:
       draw_canvas()
      else:
-      print(".") 
       time.sleep(1)
-        
-except IOError as e:
-    logging.info(e)
-    
-except KeyboardInterrupt:    
-    logging.info("ctrl + c:")
-    epd2in7_V2.epdconfig.module_exit(cleanup=True)
-    exit()

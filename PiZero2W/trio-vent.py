@@ -326,6 +326,9 @@ trio_vent_sleep(6)
 pwm_vent_Z(ZULUFT_Vent_Percent)
 pwm_vent_W(0)
 
+last_log   = ""
+actual_log = ""
+
 while True:
 
   # Clocks
@@ -345,18 +348,20 @@ while True:
   if WC_Vent and not WC_Light:
    nachlauf -= 1
 
-  # Debug all Parameters  
-  print(
-  "OFF", time_OFF, 
-  " ON", time_ON, 
-  " LIGHT", time_LIGHT, 
-  " NL", nachlauf,
-  " | ",
-  " L", WC_Light, 
-  " V", WC_Vent,
-  " H", WC_Humidity,
-  " K", KUECHE_Vent,
-  sep="")      
+  # Debug all Parameters, "OFF" is to noisy
+  actual_log = ( " ON=" + str(time_ON) + 
+   " LIGHT=" + str(time_LIGHT) + 
+   " NL=" + str(nachlauf) +
+   " L=" + str(WC_Light) + 
+   " V=" + str(WC_Vent) +
+   " H=" + str(WC_Humidity) +
+   " K=" + str(KUECHE_Vent)
+  )
+
+  if actual_log!=last_log:
+   print("OFF=", time_OFF, actual_log, sep="")
+   last_log = actual_log
+
   
   if time_OFF==-1:
    # Zwangsbelüftung nach langem Stillstand

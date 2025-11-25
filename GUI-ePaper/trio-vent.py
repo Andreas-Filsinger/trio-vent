@@ -2,15 +2,26 @@
 # -*- coding:utf-8 -*-
 import sys
 import os
-#import logging
+import logging
 import epd2in7_V2
 import time
-from PIL import Image,ImageDraw,ImageFont
 import traceback
 import gpiozero
 import signal
-from paho.mqtt import client as mqtt_client
 import json5
+
+from paho.mqtt import client as mqtt_client
+from PIL import Image, ImageDraw, ImageFont
+
+from systemd import daemon
+from systemd import journal
+
+# some consts
+
+KEY1 = 5   # [GPIO] 
+KEY2 = 6   # [GPIO] 
+KEY3 = 13  # [GPIO] 
+KEY4 = 19  # [GPIO]  
 
 CHAR_UP   = "\u2191"
 CHAR_DOWN = "\u2193"
@@ -26,58 +37,72 @@ ICON_MINUS    = '\uead0' # '\ue313'
 ICON_ON       = '\ue3e7'
 ICON_OFF      = '\ue3e6'
 
-# the "vent" device
+# my MQTT-Broker is
+mqtt_broker = "192.168.115.10"
+mqtt_user   = "user"
+mqtt_passwd = "user"
 
-device        = "trio-vent-106031846322"
-# R
+# the "vent" PWM controller device
+device_vent      = "trio-vent-106031846322"
+#  R
 status_zuluft    = "/status/vent-zuluft"      # 0..100
 status_kueche    = "/status/vent-kueche"      # true | false
 status_wc        = "/status/vent-wc"          # 0..100
-
-# R/W
+#  W
 cmd_automatic = "/command/automatic"        # true | false
 cmd_zuluft    = "/command/vent-zuluft"      # 0..100
 cmd_kueche    = "/command/vent-kueche"      # true | false
 cmd_wc        = "/command/vent-wc"          # 0..100
 
-
 # the GUI Device (it is me!)
-
+#
 local_device_id = "gui"
 
 # Humidity Device
-
+#
 device_humidity      = "shellyhtg3-543204567354"
 topic_humidity       = "/status/humidity:0"
 #  sample Value = {"id": 0,"rh":60.3}
 
+# Logging Setup Systemd/Console
+#
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+#
+# are we running under systemd or console
+#
+if os.getenv("INVOCATION_ID")==None:
+ # we run at console
+ console_handler = logging.StreamHandler(sys.stdout)
+ logger.addHandler(console_handler)
+ logger.info("Log goes to console")
+else: 
+ # we run as a systemd-service
+ journald_handler = journal.JournalHandler(SYSLOG_IDENTIFIER="trio-vent")
+ logger.addHandler(journald_handler)
+ logger.info("Log goes to journalctl")
+
+# global vars
 humidity    = 0.0
 WC_Vent     = 0
 ZULUFT_Vent = 0
-
-client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, client_id=local_device_id)
-
-KEY1 = 5
-KEY2 = 6
-KEY3 = 13
-KEY4 = 19
-
 kueche_vent = False
-canvas_need_update = False
+canvas_need_update = True
+client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2, client_id=local_device_id)
 
 def k1_pressed():
  global kueche_vent
- print("KEY1")
+ logger.info("KEY1")
  if kueche_vent:
-  print("MQTT" + CHAR_UP, cmd_kueche, client.publish(device + cmd_kueche,"false"),"OFF")
+  logger.info("MQTT" + CHAR_UP, cmd_kueche, client.publish(device_vent + cmd_kueche,"false"),"OFF")
   kueche_vent = False
  else:
-  print("MQTT" + CHAR_UP, cmd_kueche, client.publish(device + cmd_kueche,"true"),"ON")
+  logger.info("MQTT" + CHAR_UP, cmd_kueche, client.publish(device_vent + cmd_kueche,"true"),"ON")
   kueche_vent = True
 
 def k2_pressed():
  global ZULUFT_Vent
- print("KEY2")
+ logger.info("KEY2")
  # more Power on ZULUFT_Vent
  match ZULUFT_Vent:
   case 25:
@@ -90,11 +115,11 @@ def k2_pressed():
    ZULUFT_Vent=40
   case 0:
    ZULUFT_Vent=25
- print("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
+ logger.info("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device_vent + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
  
 def k3_pressed():
  global ZULUFT_Vent
- print("KEY3")
+ logger.info("KEY3")
  # less Power on ZULUFT_Vent
  match ZULUFT_Vent:
   case 27:
@@ -107,15 +132,15 @@ def k3_pressed():
    ZULUFT_Vent=35
   case 0:
    ZULUFT_Vent=40
- print("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
+ logger.info("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device_vent + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
  
 def k4_pressed():
- print("KEY4")
+ logger.info("KEY4")
  # Power the WC_Vent for a few minutes
  if WC_Vent==0:
-  print("MQTT" + CHAR_UP, cmd_wc, "60", client.publish(device + cmd_wc, payload=60, qos=1))
+  logger.info("MQTT" + CHAR_UP, cmd_wc, "60", client.publish(device_vent + cmd_wc, payload=60, qos=1))
  else:
-  print("MQTT" + CHAR_UP, cmd_wc, "0", client.publish(device + cmd_wc, payload=0, qos=1))
+  logger.info("MQTT" + CHAR_UP, cmd_wc, "0", client.publish(device_vent + cmd_wc, payload=0, qos=1))
   
 def mqtt_event_message(client, userdata, message):
    
@@ -125,27 +150,26 @@ def mqtt_event_message(client, userdata, message):
     if message.topic == device_humidity + topic_humidity:
      payload = str(message.payload.decode("utf-8"))
      humidity = float(json5.loads(payload)["rh"])
-     print(CHAR_DOWN + "MQTT", topic_humidity, humidity, "%")
+     logger.info(CHAR_DOWN + "MQTT " + topic_humidity + " " + str(humidity) + "%")
      canvas_need_update = True
      
     # WC Vent message
-    if message.topic == device + status_wc:
+    if message.topic == device_vent + status_wc:
      WC_Vent = int(message.payload.decode())
-     print(CHAR_DOWN + "MQTT", status_wc, WC_Vent)
+     logger.info(CHAR_DOWN + "MQTT " + status_wc + " " + str(WC_Vent))
      canvas_need_update = True
      
     # ZULUFT Vent message
-    if message.topic == device + status_zuluft:
+    if message.topic == device_vent + status_zuluft:
      ZULUFT_Vent = int(message.payload.decode())
-     print(CHAR_DOWN + "MQTT", status_zuluft, ZULUFT_Vent)
+     logger.info(CHAR_DOWN + "MQTT " + status_zuluft + " " + str(ZULUFT_Vent))
      canvas_need_update = True
 
 def mqtt_event_connect(client, userdata, connect_flags, reason_code, properties):
-    print("Connected with result code " + str(reason_code))
-    print("MQTT" + CHAR_LIKE, topic_humidity, client.subscribe(device_humidity + topic_humidity, qos=1))
-    print("MQTT" + CHAR_LIKE, status_wc,  client.subscribe(device + status_wc, qos=1))
-    print("MQTT" + CHAR_LIKE, status_zuluft,  client.subscribe(device + status_zuluft, qos=1))
-
+    logger.info("Connected with result code " + str(reason_code))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str(client.subscribe(device_humidity + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + status_wc + " " + str(client.subscribe(device_vent + status_wc, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + status_zuluft + " " + str(client.subscribe(device_vent + status_zuluft, qos=1)))
 
 k1 = gpiozero.Button(KEY1)
 k1.when_pressed = k1_pressed
@@ -156,25 +180,21 @@ k3.when_pressed = k3_pressed
 k4 = gpiozero.Button(KEY4)
 k4.when_pressed = k4_pressed
 
-# mqtt setup
-mqtt_broker = "192.168.115.10"
-mqtt_user   = "user"
-mqtt_passwd = "user"
-
 client.username_pw_set(mqtt_user, mqtt_passwd)
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
-print(client.connect(mqtt_broker,1883),"Connect")
+logger.info("MQTT Connect() ... " + str(client.connect(mqtt_broker,1883)))
 
+client.loop()
+
+logger.info("Loading Fonts ...")
 font_icon = ImageFont.truetype("MaterialIcons-Regular.ttf", 45)
 font_small = ImageFont.truetype("NotoSans-Bold.ttf", 18)
 font_normal = ImageFont.truetype("NotoSans-Bold.ttf", 25)
-font_huge = ImageFont.truetype("NotoSans-Bold.ttf", 30)
+font_huge = ImageFont.truetype("NotoSans-Bold.ttf", 50)
 
-#logging.basicConfig(level=logging.DEBUG)
-
+logger.info("Display Init ...")
 epd = epd2in7_V2.EPD()
-
 
 def draw_canvas():
 
@@ -199,24 +219,24 @@ def draw_canvas():
     else: 
      draw.text((0, LINE_Y*3), ICON_SHOWER+ICON_ON, font = font_icon, fill = 0)
 
-#    draw.text((10, 60), ICON_AIR, font = font_icon, fill = 0)
-#    draw.text((10, 80), ICON_SHOWER, font = font_icon, fill = 0)
-#    draw.text((10, 100), ICON_FANOFF, font = font_icon, fill = 0)
-
     # Fresh Air Power
-    draw.text((130, LINE_Y*2), str(ZULUFT_Vent), font = font_huge, fill = 0)
+    draw.text((110, 0), str(ZULUFT_Vent), font = font_huge, fill = 0)
     # Humidity
-    draw.text((130, LINE_Y*3), "{:.1f}".format(humidity)+"%", font = font_huge, fill = 0)
+    draw.text((110, LINE_Y*2), "{:.1f}".format(humidity)+"%", font = font_huge, fill = 0)
 
     epd.display_Base(epd.getbuffer(Himage))
     epd.sleep()
     
+daemon.notify('READY=1')
+logger.info("... startup complete")    
 
-canvas_need_update = True
 while (True):
 
-     client.loop()
-     if canvas_need_update:
+    client.loop()
+    if canvas_need_update:
       draw_canvas()
-     else:
+    else:
+      daemon.notify("WATCHDOG=1")
       time.sleep(1)
+
+#

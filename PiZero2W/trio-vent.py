@@ -26,8 +26,8 @@
  Raspberry Pi Zero 2 W
  =====================
   pwmchip0
-   Pin 18, 3,3 V 1 kHz
-   Pin 13, 3,3 V 1 kHz
+   GPIO 18, 3,3 V 1 kHz
+   GPIO 13, 3,3 V 1 kHz
 
  Raspberry Pi 5 4 Gbyte
  ======================
@@ -38,17 +38,23 @@
   Home Assistant 
 
 '''
-
+import os
+import sys
 import configparser
 import pigpio
 from paho.mqtt import client as mqtt_client
 import json5
 import time
+import logging
+from systemd import daemon
+from systemd import journal
 
+#
+# MQTT Icons to make clear "subscribe"(Heart) "message"(Arrow Down) "publish"(Arrow Up)
+#
 CHAR_UP   = "\u2191"
 CHAR_DOWN = "\u2193"
 CHAR_LIKE = "\u2665"
-
 
 #
 # To the mqtt Broker this program is like a Device, 
@@ -65,31 +71,22 @@ mqtt_broker = "192.168.115.10"
 mqtt_user   = "user"
 mqtt_passwd = "user"
 
-# Remote Devices
-
-#  Shelly-Feuchtigkeit auslesen
-
+#  Shelly H&T Gen. 3 (für WC Luftfeuchtigkeit)
+#
 device_humidity      = "shellyhtg3-543204567354"
-
 topic_humidity       = "/status/humidity:0"
 #  sample Value = {"id": 0,"rh":60.3}
 
 
-#  Shelly 1 Mini Gen4 "A" "Sensor Toilettenlichtschalter" + "Schalter Küche Vent"
-
+#  Shelly 1 Mini Gen4 "Sensor Toilettenlichtschalter" UND "Relais Küche Vent"
+#
 device_Shelly   = "shelly1minig4-ccba97c08c34"
-
+#
 topic_switch    = "/status/input:0"
-# sample Value = {"id":0,"state":false}
-
+#  sample Value = {"id":0,"state":false}
 topic_relay    = "/command/switch:0"
-# sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
+#  sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
 
-
-# Blackbox Devices
-
-#  Motordrehzahl Steuergerät PWM0 "Zuluft-Motor"
-#  Motordrehzahl Steuergerät PWM1 "Bad-Motor"  
 
 '''
  Persistent
@@ -100,16 +97,18 @@ topic_relay    = "/command/switch:0"
 
 '''
 
-
 # Skizze
 #
-# (M-Bad)    --- (M-Drehzahl-Steuergerät B) ----v
-#                                               |
-# (M-Zuluft) --- (M-Drehzahl-Steuergerät A) --- (Pi Zero 2 W) --mqtt--> 
+# (Vent-WV)     --- (M-Drehzahl-Steuergerät W) ----v
+#                                                  |
+# (Vent-Zuluft) --- (M-Drehzahl-Steuergerät Z) --- (Pi Zero 2 W) --mqtt--> 
+#                                                  ^
+#                                                  |
+# Meanwell 5V   -----------------------------------+
 #
-# (M-Küche)  --- (Shelly 1 "O") --mqtt-->
+# (Vent-Küche)  --- (Shelly 1 terminal "O") --mqtt-->
 #
-# (Schalter-Badlicht) --- (Shelly 1 "SW") --mqtt-->
+# (Schalter-Badlicht) --- (230V Relais) --- (Shelly 1 terminal "SW") --mqtt-->
 #
 # (Pi 5 Home Assistant) --mqtt--<
 #  (ePaper-GUI)
@@ -141,7 +140,7 @@ cfg_entfeuchtung_an    = 70       # [%], "0" = unknown
 
 # Persistent
 
-TIME_AUTO_ON           = 24*60*60 # [seconds] Forced ON after n Seconds
+TIME_AUTO_ON           = 24*60*60 # [seconds] Forced ON after n seconds of idle
 
 #
 # time_OFF, ein Zeitzähler [Sekunden] von -TIME_AUTO_ON .. 0 .. cfg_nachlauf_lang
@@ -167,7 +166,6 @@ time_LIGHT          = 0
 #
 WC_Light            = False    # False=Light off 
 WC_Vent             = False    # False=Vent stopped
-
 WC_Vent_Normal      = 31       # % Speed of Vent
 WC_Vent_Silent      = 23       # % Speed of Vent
 WC_Humidity         = float(0) # actual Humidity Value
@@ -187,20 +185,32 @@ ZULUFT_Vent_Percent = 25
 #
 nachlauf           = -1
  
-# R
-sensor_kueche      = "/sensor/volumen-kueche"  # 0|1
-sensor_bad         = "/sensor/volumen-bad"     # 0..100
-sensor_zuluft      = "/sensor/volumen-zuluft"  # 0..100
-sensor_schalter    = "/sensor/schalter"        # 0|1
-sensor_luftfeuchte = "/sensor/luftfeuchte"     # 0..100
-
-# Zuluft
-PWM0_GPIO = 18
-
-# Bad Abluft
-PWM1_GPIO = 13
+# PWM globals
 PWM_FREQUENCY = 1000
 PWM_PERCENT_FACTOR = 10000
+
+# Zuluft PWM
+PWM0_GPIO = 18
+
+# WC Bad Abluft PWM
+PWM1_GPIO = 13
+
+# Logging Setup Systemd/Console
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+#
+# are we running under systemd or console
+#
+if os.getenv("INVOCATION_ID")==None:
+ # we run at console
+ console_handler = logging.StreamHandler(sys.stdout)
+ logger.addHandler(console_handler)
+ logger.info("Log goes to console")
+else:
+ # we run as a systemd-service
+ journald_handler = journal.JournalHandler(SYSLOG_IDENTIFIER="trio-vent")
+ logger.addHandler(journald_handler)
+ logger.info("Log goes to journalctl")
 
 # Global Vars "pi" and "client"
 
@@ -208,7 +218,7 @@ pi = pigpio.pi()
 client = mqtt_client.Client(local_device_id)
 client.username_pw_set(mqtt_user, mqtt_passwd)
 
-# sleep() used in this world
+# local "sleep()" used in this world
 def trio_vent_sleep(seconds):
  while seconds>0:
   client.loop()
@@ -221,7 +231,7 @@ def pwm_vent_Z(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM0_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- print("MQTT" + CHAR_UP, status_zuluft, "Vent Z", percent, "%", client.publish(local_device_id + status_zuluft, payload=percent, qos=1))
+ logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1)))
  
 def pwm_vent_W(percent): 
  if percent>100:
@@ -229,15 +239,15 @@ def pwm_vent_W(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM1_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- print("MQTT" + CHAR_UP, status_wc, "Vent W", percent, "%", client.publish(local_device_id + status_wc, payload=percent, qos=1))
+ logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1)))
 
 def power_vent_K(onoff):
  if onoff:
-  print("MQTT" + CHAR_UP, topic_relay, "on", client.publish(device_Shelly + topic_relay, payload="on", qos=1)) 
-  print("MQTT" + CHAR_UP, status_kueche, "true", client.publish(local_device_id + status_kueche, payload="true", qos=1))
+  logger.info("MQTT" + CHAR_UP + " " + topic_relay + " on" + str(client.publish(device_Shelly + topic_relay, payload="on", qos=1))) 
+  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1)))
  else:
-  print("MQTT" + CHAR_UP, topic_relay, "off", client.publish(device_Shelly + topic_relay, payload="off", qos=1))
-  print("MQTT" + CHAR_UP, status_kueche, "false", client.publish(local_device_id + status_kueche, payload="false", qos=1))
+  logger.info("MQTT" + CHAR_UP + " " + topic_relay + " off" + str(client.publish(device_Shelly + topic_relay, payload="off", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1)))
 
 def mqtt_event_message(client, userdata, message):
 
@@ -247,7 +257,7 @@ def mqtt_event_message(client, userdata, message):
     if message.topic == local_device_id + cmd_kueche:
      # vent
      v = message.payload.decode()
-     print(CHAR_DOWN + "MQTT Küche Vent", v)
+     logger.info(CHAR_DOWN + "MQTT Küche Vent " + v)
      if v=="true":
       pwm_vent_Z(100)
       KUECHE_Vent = True
@@ -259,18 +269,18 @@ def mqtt_event_message(client, userdata, message):
     # command "Automatic" {"true"|"false"}
     if message.topic == local_device_id + cmd_automatic:
      v = message.payload.decode()
-     print(CHAR_DOWN + "MQTT Automatic", v)
+     logger.info(CHAR_DOWN + "MQTT Automatic " + v)
     
     # command "Zuluft Vent" {0..100}
     if message.topic == local_device_id + cmd_zuluft:
      v = int(message.payload.decode())
-     print(CHAR_DOWN + "MQTT ZULUFT Vent", v)
+     logger.info(CHAR_DOWN + "MQTT ZULUFT Vent " + str(v))
      pwm_vent_Z(v)
 
     # command "WC Vent" {0..100} im Moment nur 0|60
     if message.topic == local_device_id + cmd_wc:
      v = int(message.payload.decode())
-     print(CHAR_DOWN + "MQTT WC Vent", v)
+     logger.info(CHAR_DOWN + "MQTT WC Vent " + str(v))
      if v==0:
       nachlauf=1
      else: 
@@ -279,7 +289,7 @@ def mqtt_event_message(client, userdata, message):
     # Status change "WC-Lichtschalter" {"true"|"false"}
     if message.topic == device_Shelly + topic_switch:
      s = json5.loads(message.payload.decode())["state"]
-     print(CHAR_DOWN + "MQTT WC-Licht ","´",s,"´",sep="")
+     logger.info(CHAR_DOWN + "MQTT WC-Licht " + s)
      if s:
       WC_Light = True
       time_OFF = 0
@@ -290,33 +300,33 @@ def mqtt_event_message(client, userdata, message):
     if message.topic == device_humidity+topic_humidity:
      payload = str(message.payload.decode("utf-8"))
      WC_Humidity = float(json5.loads(payload)["rh"])
-     print(CHAR_DOWN + "MQTT Humidity", WC_Humidity, "%")
+     logger.info(CHAR_DOWN + "MQTT Humidity " + str(WC_Humidity) + "%")
      
  
 def mqtt_event_connect(client, userdata, flags, rc):
-    print("Connected with result code " + str(rc))
+    logger.info("Connected with result code " + str(rc))
 
     # Remote Device Subscriptions
-    print("MQTT" + CHAR_LIKE, topic_humidity, client.subscribe(device_humidity + topic_humidity, qos=1))
-    print("MQTT" + CHAR_LIKE, topic_switch, client.subscribe(device_Shelly + topic_switch, qos=1))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str( client.subscribe(device_humidity + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str( client.subscribe(device_Shelly + topic_switch, qos=1)))
 
     # Own Subscriptions for me to serve
-    print("MQTT" + CHAR_LIKE, cmd_automatic, client.subscribe(local_device_id + cmd_automatic, qos=1))
-    print("MQTT" + CHAR_LIKE, cmd_zuluft, client.subscribe(local_device_id + cmd_zuluft, qos=1))
-    print("MQTT" + CHAR_LIKE, cmd_kueche, client.subscribe(local_device_id + cmd_kueche, qos=1))
-    print("MQTT" + CHAR_LIKE, cmd_wc, client.subscribe(local_device_id + cmd_wc, qos=1))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_automatic + " " + str( client.subscribe(local_device_id + cmd_automatic, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_zuluft + " " + str( client.subscribe(local_device_id + cmd_zuluft, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_kueche + " " + str( client.subscribe(local_device_id + cmd_kueche, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_wc + " " + str( client.subscribe(local_device_id + cmd_wc, qos=1)))
 
 # Connect to the MQTT Server
 
-print("MQTT connect ...")
+logger.info("MQTT connect ...")
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
-print(client.connect(mqtt_broker, 1883))
+client.connect(mqtt_broker, 1883)
 trio_vent_sleep(3)
 
 # Vent Motor Speed up
 
-print ("Motor Init ...")
+logger.info("Motor Init ...")
 pwm_vent_Z(100)
 pwm_vent_W(100)
 trio_vent_sleep(6)
@@ -328,6 +338,9 @@ pwm_vent_W(0)
 
 last_log   = ""
 actual_log = ""
+
+daemon.notify('READY=1')
+logger.info("Startup complete")
 
 while True:
 
@@ -359,13 +372,13 @@ while True:
   )
 
   if actual_log!=last_log:
-   print("OFF=", time_OFF, actual_log, sep="")
+   logger.info("OFF=" + str(time_OFF) + actual_log)
    last_log = actual_log
 
   
   if time_OFF==-1:
    # Zwangsbelüftung nach langem Stillstand
-   print("Vent on after Idle")
+   logger.info("Vent on after Idle")
    pwm_vent_W(100)
    time.sleep(4)
    pwm_vent_W(WC_Vent_Silent)
@@ -375,7 +388,7 @@ while True:
   if time_LIGHT==cfg_anlaufverzoegerung:
    # Belüftung nun an
    if not WC_Vent:
-    print("Vent on after Light on")
+    logger.info("Vent on after Light on")
     pwm_vent_W(100)
     time.sleep(4)
     pwm_vent_W(WC_Vent_Normal)
@@ -386,7 +399,7 @@ while True:
    nachlauf = max(cfg_nachlauf_kurz, nachlauf)
    
   if (WC_Humidity>=cfg_entfeuchtung_an) and not WC_Vent:
-   print("Vent on after high Humidity")
+   logger.info("Vent on after high Humidity")
    pwm_vent_W(100)
    time.sleep(4)
    pwm_vent_W(WC_Vent_Silent)   
@@ -396,17 +409,17 @@ while True:
    
   if time_LIGHT==cfg_anlaufverzoegerung+cfg_kleinesgeschaeft:
    # Belüftung nun länger laufen lassen
-   print("a bit longer Stay")
+   logger.info("a bit longer Stay")
    nachlauf = max(cfg_nachlauf_lang, nachlauf)
 
   if time_LIGHT==cfg_anlaufverzoegerung+cfg_duschen:
    # Belüftung nun ganz lang laufen lassen
-   print("a full long Stay")
+   logger.info("a full long Stay")
    nachlauf = max(cfg_nachlauf_duschen, nachlauf)
   
   if nachlauf==0:
    # Belüftung wieder aus
-   print("Vent OFF")
+   logger.info("Vent OFF")
    # Switch off WC Vent
    pwm_vent_W(0)   
    pwm_vent_Z(ZULUFT_Vent_Percent)
@@ -415,5 +428,6 @@ while True:
    time_OFF = -TIME_AUTO_ON
    nachlauf = -1
    
+  daemon.notify("WATCHDOG=1") 
   trio_vent_sleep(1)
   

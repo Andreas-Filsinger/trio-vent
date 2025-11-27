@@ -49,12 +49,6 @@ import logging
 from systemd import daemon
 from systemd import journal
 
-#
-# MQTT Icons to make clear "subscribe"(Heart) "message"(Arrow Down) "publish"(Arrow Up)
-#
-CHAR_UP   = "\u2191"
-CHAR_DOWN = "\u2193"
-CHAR_LIKE = "\u2665"
 
 #
 # To the mqtt Broker this program is like a Device, 
@@ -68,6 +62,7 @@ local_device_id      = "trio-vent-106031846322"
 # The Broker is not persistent so values from "missed" messages can not be retrieved
 #
 mqtt_broker = "192.168.115.10"
+mqtt_port   = 1883
 mqtt_user   = "user"
 mqtt_passwd = "user"
 
@@ -184,6 +179,13 @@ ZULUFT_Vent_Percent = 25
 # Wie lange soll der Lüfter noch nachlaufen
 #
 nachlauf           = -1
+
+#
+# MQTT Icons to make clear "subscribe"(Heart) "message"(Arrow Down) "publish"(Arrow Up)
+#
+CHAR_UP   = "\u2191"
+CHAR_DOWN = "\u2193"
+CHAR_LIKE = "\u2665"
  
 # PWM globals
 PWM_FREQUENCY = 1000
@@ -301,7 +303,6 @@ def mqtt_event_message(client, userdata, message):
      payload = str(message.payload.decode("utf-8"))
      WC_Humidity = float(json5.loads(payload)["rh"])
      logger.info(CHAR_DOWN + "MQTT Humidity " + str(WC_Humidity) + "%")
-     
  
 def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("Connected with result code " + str(rc))
@@ -316,12 +317,16 @@ def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("MQTT" + CHAR_LIKE + " " + cmd_kueche + " " + str( client.subscribe(local_device_id + cmd_kueche, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + cmd_wc + " " + str( client.subscribe(local_device_id + cmd_wc, qos=1)))
 
+def mqtt_event_disconnect(client, userdata, reason_code, properties):
+    logger.info("MQTT event disconnect (hope for automatic reconnect)")
+
 # Connect to the MQTT Server
 
 logger.info("MQTT connect ...")
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
-client.connect(mqtt_broker, 1883)
+client.on_disconnect = mqtt_event_disconnect
+client.connect(mqtt_broker, mqtt_port, keepalive=20)
 trio_vent_sleep(3)
 
 # Vent Motor Speed up
@@ -375,7 +380,6 @@ while True:
    logger.info("OFF=" + str(time_OFF) + actual_log)
    last_log = actual_log
 
-  
   if time_OFF==-1:
    # Zwangsbelüftung nach langem Stillstand
    logger.info("Vent on after Idle")
@@ -430,4 +434,7 @@ while True:
    
   daemon.notify("WATCHDOG=1") 
   trio_vent_sleep(1)
-  
+  if not client.is_connected():
+   logger.info("MQTT is not connected, giving up")
+   exit()
+     

@@ -39,6 +39,7 @@ ICON_OFF      = '\ue3e6'
 
 # my MQTT-Broker is
 mqtt_broker = "192.168.115.10"
+mqtt_port   = 1883
 mqtt_user   = "user"
 mqtt_passwd = "user"
 
@@ -171,6 +172,9 @@ def mqtt_event_connect(client, userdata, connect_flags, reason_code, properties)
     logger.info("MQTT" + CHAR_LIKE + " " + status_wc + " " + str(client.subscribe(device_vent + status_wc, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + status_zuluft + " " + str(client.subscribe(device_vent + status_zuluft, qos=1)))
 
+def mqtt_event_disconnect(client, userdata, reason_code, properties):
+    logger.info("MQTT event disconnect (hope for automatic reconnect)")
+
 k1 = gpiozero.Button(KEY1)
 k1.when_pressed = k1_pressed
 k2 = gpiozero.Button(KEY2)
@@ -183,7 +187,8 @@ k4.when_pressed = k4_pressed
 client.username_pw_set(mqtt_user, mqtt_passwd)
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
-logger.info("MQTT Connect() ... " + str(client.connect(mqtt_broker,1883)))
+client.on_disconnect = mqtt_event_disconnect
+logger.info("MQTT Connect() ... " + str(client.connect(mqtt_broker, mqtt_port, keepalive=30)))
 
 client.loop()
 
@@ -233,10 +238,12 @@ logger.info("... startup complete")
 while (True):
 
     client.loop()
+    daemon.notify("WATCHDOG=1")
     if canvas_need_update:
       draw_canvas()
     else:
-      daemon.notify("WATCHDOG=1")
       time.sleep(1)
-
+    if not client.is_connected():
+     logger.info("MQTT not connected, giving up")
+     exit()
 #

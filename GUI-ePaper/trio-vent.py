@@ -95,10 +95,10 @@ def k1_pressed():
  global kueche_vent
  logger.info("KEY1")
  if kueche_vent:
-  logger.info("MQTT" + CHAR_UP, cmd_kueche, client.publish(device_vent + cmd_kueche,"false"),"OFF")
+  logger.info("MQTT" + CHAR_UP + " " + cmd_kueche + " OFF " + str(client.publish(device_vent + cmd_kueche, "false")))
   kueche_vent = False
  else:
-  logger.info("MQTT" + CHAR_UP, cmd_kueche, client.publish(device_vent + cmd_kueche,"true"),"ON")
+  logger.info("MQTT" + CHAR_UP + " " + cmd_kueche + " ON " + str(client.publish(device_vent + cmd_kueche, "true")))
   kueche_vent = True
 
 def k2_pressed():
@@ -116,7 +116,7 @@ def k2_pressed():
    ZULUFT_Vent=40
   case 0:
    ZULUFT_Vent=25
- logger.info("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device_vent + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
+ logger.info("MQTT" + CHAR_UP + " " + cmd_zuluft + " " + str(ZULUFT_Vent) + str(client.publish(device_vent + cmd_zuluft, payload=ZULUFT_Vent, qos=1)))
  
 def k3_pressed():
  global ZULUFT_Vent
@@ -133,15 +133,15 @@ def k3_pressed():
    ZULUFT_Vent=35
   case 0:
    ZULUFT_Vent=40
- logger.info("MQTT" + CHAR_UP, cmd_zuluft, ZULUFT_Vent, client.publish(device_vent + cmd_zuluft, payload=ZULUFT_Vent, qos=1))
+ logger.info("MQTT" + CHAR_UP + " " + cmd_zuluft + " " + str(ZULUFT_Vent) + str(client.publish(device_vent + cmd_zuluft, payload=ZULUFT_Vent, qos=1)))
  
 def k4_pressed():
  logger.info("KEY4")
  # Power the WC_Vent for a few minutes
  if WC_Vent==0:
-  logger.info("MQTT" + CHAR_UP, cmd_wc, "60", client.publish(device_vent + cmd_wc, payload=60, qos=1))
+  logger.info("MQTT" + CHAR_UP + " " + cmd_wc + " 60" + str(client.publish(device_vent + cmd_wc, payload=60, qos=1)))
  else:
-  logger.info("MQTT" + CHAR_UP, cmd_wc, "0", client.publish(device_vent + cmd_wc, payload=0, qos=1))
+  logger.info("MQTT" + CHAR_UP + " " + cmd_wc + " 0" + str(client.publish(device_vent + cmd_wc, payload=0, qos=1)))
   
 def mqtt_event_message(client, userdata, message):
    
@@ -173,7 +173,8 @@ def mqtt_event_connect(client, userdata, connect_flags, reason_code, properties)
     logger.info("MQTT" + CHAR_LIKE + " " + status_zuluft + " " + str(client.subscribe(device_vent + status_zuluft, qos=1)))
 
 def mqtt_event_disconnect(client, userdata, reason_code, properties):
-    logger.info("MQTT event disconnect (hope for automatic reconnect)")
+    logger.info("MQTT event disconnect: giving up")
+    exit()
 
 k1 = gpiozero.Button(KEY1)
 k1.when_pressed = k1_pressed
@@ -244,6 +245,6 @@ while (True):
     else:
       time.sleep(1)
     if not client.is_connected():
-     logger.info("MQTT not connected, giving up")
+     logger.info("MQTT not connected: giving up")
      exit()
 #

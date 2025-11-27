@@ -317,8 +317,9 @@ def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("MQTT" + CHAR_LIKE + " " + cmd_kueche + " " + str( client.subscribe(local_device_id + cmd_kueche, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + cmd_wc + " " + str( client.subscribe(local_device_id + cmd_wc, qos=1)))
 
-def mqtt_event_disconnect(client, userdata, reason_code, properties):
-    logger.info("MQTT event disconnect (hope for automatic reconnect)")
+def mqtt_event_disconnect(client, userdata, rc):
+    logger.info("MQTT event disconnect, giving up")
+    exit()
 
 # Connect to the MQTT Server
 
@@ -422,10 +423,10 @@ while True:
    nachlauf = max(cfg_nachlauf_duschen, nachlauf)
   
   if nachlauf==0:
-   # Belüftung wieder aus
-   logger.info("Vent OFF")
+   logger.info("WC vent retirement")
    # Switch off WC Vent
    pwm_vent_W(0)   
+   # Zuluft wieder normal
    pwm_vent_Z(ZULUFT_Vent_Percent)
    WC_Vent = False
    time_ON = 0

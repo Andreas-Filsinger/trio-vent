@@ -233,7 +233,7 @@ def pwm_vent_Z(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM0_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1)))
+ logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1, retain=True)))
  
 def pwm_vent_W(percent): 
  if percent>100:
@@ -241,15 +241,15 @@ def pwm_vent_W(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM1_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1)))
+ logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1, retain=True)))
 
 def power_vent_K(onoff):
  if onoff:
   logger.info("MQTT" + CHAR_UP + " " + topic_relay + " on" + str(client.publish(device_Shelly + topic_relay, payload="on", qos=1))) 
-  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1, retain=True)))
  else:
   logger.info("MQTT" + CHAR_UP + " " + topic_relay + " off" + str(client.publish(device_Shelly + topic_relay, payload="off", qos=1)))
-  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1, retain=True)))
 
 def mqtt_event_message(client, userdata, message):
 
@@ -319,7 +319,7 @@ def mqtt_event_connect(client, userdata, flags, rc):
 
 def mqtt_event_disconnect(client, userdata, rc):
     logger.info("MQTT event disconnect, giving up")
-    exit()
+    exit(1)
 
 # Connect to the MQTT Server
 
@@ -437,5 +437,5 @@ while True:
   trio_vent_sleep(1)
   if not client.is_connected():
    logger.info("MQTT is not connected, giving up")
-   exit()
+   exit(1)
      

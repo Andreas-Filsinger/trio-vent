@@ -172,9 +172,9 @@ def mqtt_event_connect(client, userdata, connect_flags, reason_code, properties)
     logger.info("MQTT" + CHAR_LIKE + " " + status_wc + " " + str(client.subscribe(device_vent + status_wc, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + status_zuluft + " " + str(client.subscribe(device_vent + status_zuluft, qos=1)))
 
-def mqtt_event_disconnect(client, userdata, reason_code, properties):
+def mqtt_event_disconnect(client, userdata, disconnect_flags, reason_code, properties):
     logger.info("MQTT event disconnect: giving up")
-    exit()
+    exit(1)
 
 k1 = gpiozero.Button(KEY1)
 k1.when_pressed = k1_pressed
@@ -246,5 +246,5 @@ while (True):
       time.sleep(1)
     if not client.is_connected():
      logger.info("MQTT not connected: giving up")
-     exit()
+     exit(1)
 #

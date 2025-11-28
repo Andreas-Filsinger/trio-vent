@@ -49,7 +49,6 @@ import logging
 from systemd import daemon
 from systemd import journal
 
-
 #
 # To the mqtt Broker this program is like a Device, 
 # subscribing-for and publish-this
@@ -81,7 +80,8 @@ topic_switch    = "/status/input:0"
 #  sample Value = {"id":0,"state":false}
 topic_relay    = "/command/switch:0"
 #  sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
-
+topic_ping     = "/command"
+# possible Value = "announce"(fill announce) / "status_update"(send /status/*)
 
 '''
  Persistent
@@ -233,7 +233,7 @@ def pwm_vent_Z(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM0_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1)))
+ logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1, retain=True)))
  
 def pwm_vent_W(percent): 
  if percent>100:
@@ -241,15 +241,15 @@ def pwm_vent_W(percent):
  if percent<0:
   percent=0 
  pi.hardware_PWM(PWM1_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
- logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1)))
+ logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1, retain=True)))
 
 def power_vent_K(onoff):
  if onoff:
   logger.info("MQTT" + CHAR_UP + " " + topic_relay + " on" + str(client.publish(device_Shelly + topic_relay, payload="on", qos=1))) 
-  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1, retain=True)))
  else:
   logger.info("MQTT" + CHAR_UP + " " + topic_relay + " off" + str(client.publish(device_Shelly + topic_relay, payload="off", qos=1)))
-  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1, retain=True)))
 
 def mqtt_event_message(client, userdata, message):
 
@@ -291,7 +291,7 @@ def mqtt_event_message(client, userdata, message):
     # Status change "WC-Lichtschalter" {"true"|"false"}
     if message.topic == device_Shelly + topic_switch:
      s = json5.loads(message.payload.decode())["state"]
-     logger.info(CHAR_DOWN + "MQTT WC-Licht " + s)
+     logger.info(CHAR_DOWN + "MQTT WC-Licht " + str(s))
      if s:
       WC_Light = True
       time_OFF = 0
@@ -319,7 +319,7 @@ def mqtt_event_connect(client, userdata, flags, rc):
 
 def mqtt_event_disconnect(client, userdata, rc):
     logger.info("MQTT event disconnect, giving up")
-    exit()
+    exit(1)
 
 # Connect to the MQTT Server
 
@@ -423,7 +423,7 @@ while True:
    nachlauf = max(cfg_nachlauf_duschen, nachlauf)
   
   if nachlauf==0:
-   logger.info("WC vent retirement")
+   logger.info("WC vent OFF")
    # Switch off WC Vent
    pwm_vent_W(0)   
    # Zuluft wieder normal
@@ -437,5 +437,5 @@ while True:
   trio_vent_sleep(1)
   if not client.is_connected():
    logger.info("MQTT is not connected, giving up")
-   exit()
+   exit(1)
      

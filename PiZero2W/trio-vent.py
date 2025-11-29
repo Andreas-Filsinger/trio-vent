@@ -53,12 +53,15 @@ from systemd import journal
 # To the mqtt Broker this program is like a Device, 
 # subscribing-for and publish-this
 #
-local_device_id      = "trio-vent-106031846322"
+local_device_id      = "trio-vent-106031846322" # software device
+local_rev            = "183"                    # version / revision number
 
 #
 # A MQTT Broker is a 24/7 Message Router for Topics
 # You can ask if you get notified if a interesting Topic changes
 # The Broker is not persistent so values from "missed" messages can not be retrieved
+# If a Client publish a value with a "retain"-Flag the Broker hold the value for a 
+#  another Client after the moment of subscribe get a message about the stored value
 #
 mqtt_broker = "192.168.115.10"
 mqtt_port   = 1883
@@ -113,6 +116,7 @@ topic_ping     = "/command"
 status_zuluft    = "/status/vent-zuluft"      # 0..100
 status_kueche    = "/status/vent-kueche"      # true | false
 status_wc        = "/status/vent-wc"          # 0..100
+status_version   = "/status/rev"              # Software Version String
  
 # R/W
 cmd_automatic = "/command/automatic"        # true | false
@@ -159,11 +163,12 @@ time_LIGHT          = 0
 #
 # WC
 #
-WC_Light            = False    # False=Light off 
+WC_Light            = False    # False=Light off
 WC_Vent             = False    # False=Vent stopped
 WC_Vent_Normal      = 31       # % Speed of Vent
 WC_Vent_Silent      = 23       # % Speed of Vent
-WC_Humidity         = float(0) # actual Humidity Value
+WC_Humidity         = float(0) # actual Humidity Value, 0=Unset
+WC_Humidity_Age     = 0        # age of the Humidity Value, 0=Humidity Unset
 
 #
 # KÜCHE
@@ -253,7 +258,7 @@ def power_vent_K(onoff):
 
 def mqtt_event_message(client, userdata, message):
 
-    global KUECHE_Vent, WC_Light, time_OFF, WC_Humidity, nachlauf
+    global KUECHE_Vent, WC_Light, time_OFF, WC_Humidity, WC_Humidity_Age, nachlauf
 
     # command "Küche Vent" {"true"|"false"}
     if message.topic == local_device_id + cmd_kueche:
@@ -299,10 +304,11 @@ def mqtt_event_message(client, userdata, message):
       WC_Light = False
 
     # Change of "Humidity" {JSON} 
-    if message.topic == device_humidity+topic_humidity:
+    if message.topic == device_humidity + topic_humidity:
      payload = str(message.payload.decode("utf-8"))
      WC_Humidity = float(json5.loads(payload)["rh"])
      logger.info(CHAR_DOWN + "MQTT Humidity " + str(WC_Humidity) + "%")
+     WC_Humidity_Age = 1
  
 def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("Connected with result code " + str(rc))
@@ -346,7 +352,8 @@ last_log   = ""
 actual_log = ""
 
 daemon.notify('READY=1')
-logger.info("Startup complete")
+client.publish(local_device_id + status_version, local_rev, qos=1, retain=True)
+logger.info("trio-vent Rev. " + local_rev + " startup complete")
 
 while True:
 
@@ -366,6 +373,9 @@ while True:
     
   if WC_Vent and not WC_Light:
    nachlauf -= 1
+   
+  if WC_Humidity_Age>0:
+   WC_Humidity_Age += 1
 
   # Debug all Parameters, "OFF" is to noisy
   actual_log = ( " ON=" + str(time_ON) + 
@@ -432,6 +442,11 @@ while True:
    time_ON = 0
    time_OFF = -TIME_AUTO_ON
    nachlauf = -1
+   
+  if WC_Humidity_Age>60*50: # = 50 [Min]
+   logger.info("no humidity-value refresh, unset old value to 0")
+   WC_Humidity_Age = 0
+   WC_Humidity = float(0)
    
   daemon.notify("WATCHDOG=1") 
   trio_vent_sleep(1)

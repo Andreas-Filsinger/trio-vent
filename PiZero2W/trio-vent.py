@@ -1,27 +1,43 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
+import os
+import sys
+import configparser
+import pigpio
+from paho.mqtt import client as mqtt_client
+import json5
+import time
+import logging
+from systemd import daemon
+from systemd import journal
+
 '''
 
  trio-vent  (c) 2025 Andreas Filsinger, GPL-Licence
  =========
 
- Control two Vent Motors by Hardware PWM
- Send the vent-Status (0..100) to MQTT Broker via "sensor/#"
- Read Humidity from a Shelly Temp & Humidity Device via MQTT
- Read Light-Switch Status ("SW") from a Shelly 1 via MQTT
- Write Relay 0/1 ("O") to a Shelly 1 via MQTT
+ * control two adjustable exhaust fan motors by hardware PWM
+ * control a third vent by a Shelly 1 relay
+ * mime a MQTT-device (trio-vent-xxx) for Home Assistant or the GUI
+ * let Home Assistant get control by several "command" topics
+ * send the vent-Status (0..100) to MQTT Broker via "status/#"
+ * read WC-Room-Humidity from a Shelly Temp & Humidity Device via MQTT
+ * Read WC-Light-Switch Status ("SW") from a Shelly 1 via MQTT
+ * Write Relay 0/1 ("O") to a Shelly 1 via MQTT to control the third vent
 
  Logik:
 
-  addiere Volumen von "Kueche" zu "Zuluft" damit kein Unterdruck entsteht
-  addiere Volumen von "Bad" zu "Zuluft" damit kein Unterdruck ensteht
-  fahre Bad auch hoch wenn Kueche hochfährt damit nicht aus dem Bad Luft gezogen wird
-  fahre Bad hoch wenn Luftfeuchtigkeit >69%
+ * wait to speed up WC Vent
+ * short, long and longest stay triggers short/long motor overrun
+ * a bit more fresh if WC exhaust runs
+ * full power fresh air if the kitchen exhaust runs
+ * run WC exhaust if humidity value is over adjustable value
+ * ignore humdidity sensor if not changed in 50 minutes
 
- KEMO M240
- =========
-  PWM Spannung: 3 V bis 24 V
-  PWM Frequenz: 100 Hz bis 10 kHz
+ KEMO M240 (PWM Motor Controller, tow of them)
+ =============================================
+  PWM voltage: 3 V to 24 V
+  PWM frequence: 100 Hz to 10 kHz
 
  Raspberry Pi Zero 2 W
  =====================
@@ -35,82 +51,19 @@
 
  Raspberry Pi 400
  ================
-  Home Assistant 
+  Home Assistant
 
 '''
-import os
-import sys
-import configparser
-import pigpio
-from paho.mqtt import client as mqtt_client
-import json5
-import time
-import logging
-from systemd import daemon
-from systemd import journal
+
+# this is trio-vent(ilator) version 
+#
+local_rev            = "184"                    # version / revision number
 
 #
-# To the mqtt Broker this program is like a Device, 
+# To the mqtt-Broker this program (trio-vent) is like a Device
 # subscribing-for and publish-this
 #
 local_device_id      = "trio-vent-106031846322" # software device
-local_rev            = "183"                    # version / revision number
-
-#
-# A MQTT Broker is a 24/7 Message Router for Topics
-# You can ask if you get notified if a interesting Topic changes
-# The Broker is not persistent so values from "missed" messages can not be retrieved
-# If a Client publish a value with a "retain"-Flag the Broker hold the value for a 
-#  another Client after the moment of subscribe get a message about the stored value
-#
-mqtt_broker = "192.168.115.10"
-mqtt_port   = 1883
-mqtt_user   = "user"
-mqtt_passwd = "user"
-
-#  Shelly H&T Gen. 3 (für WC Luftfeuchtigkeit)
-#
-device_humidity      = "shellyhtg3-543204567354"
-topic_humidity       = "/status/humidity:0"
-#  sample Value = {"id": 0,"rh":60.3}
-
-
-#  Shelly 1 Mini Gen4 "Sensor Toilettenlichtschalter" UND "Relais Küche Vent"
-#
-device_Shelly   = "shelly1minig4-ccba97c08c34"
-#
-topic_switch    = "/status/input:0"
-#  sample Value = {"id":0,"state":false}
-topic_relay    = "/command/switch:0"
-#  sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
-topic_ping     = "/command"
-# possible Value = "announce"(fill announce) / "status_update"(send /status/*)
-
-'''
- Persistent
-
-  to ensure a smart Start-Up include the followings vars to persistence
-
-  Humidity, WC_Light, 
-
-'''
-
-# Skizze
-#
-# (Vent-WV)     --- (M-Drehzahl-Steuergerät W) ----v
-#                                                  |
-# (Vent-Zuluft) --- (M-Drehzahl-Steuergerät Z) --- (Pi Zero 2 W) --mqtt--> 
-#                                                  ^
-#                                                  |
-# Meanwell 5V   -----------------------------------+
-#
-# (Vent-Küche)  --- (Shelly 1 terminal "O") --mqtt-->
-#
-# (Schalter-Badlicht) --- (230V Relais) --- (Shelly 1 terminal "SW") --mqtt-->
-#
-# (Pi 5 Home Assistant) --mqtt--<
-#  (ePaper-GUI)
-#
 
 # R
 status_zuluft    = "/status/vent-zuluft"      # 0..100
@@ -123,6 +76,41 @@ cmd_automatic = "/command/automatic"        # true | false
 cmd_zuluft    = "/command/vent-zuluft"      # 0..100
 cmd_kueche    = "/command/vent-kueche"      # true | false
 cmd_wc        = "/command/vent-wc"          # 0..100
+
+#
+# a MQTT broker is a 24/7 message relay/örtöö for topics
+# it is not a database, the broker duplicates messages for all subscribers
+# you can ask if you get notified if a topic of your interest changes (="subscribe")
+# you can send out a message (="publish") so all subscribers get it
+# The Broker is not persistent so values from "missed" messages can not be retrieved
+# But, if a Client publish a value with a "retain"-Flag the Broker hold the value for a time
+# after the publish by system A, if a client system B is a bit late, in the moment subscribing 
+# to a ratained message, system B gets the last known value stored by the broker. system B so 
+# must not wait for the next value, wich maybe come in minutes or hours
+#
+mqtt_broker = "192.168.115.10"
+mqtt_port   = 1883
+mqtt_user   = "user"
+mqtt_passwd = "user"
+
+#  Shelly H&T Gen. 3 (messuring WC air hummidity)
+#
+device_humidity      = "shellyhtg3-543204567354"
+topic_humidity       = "/status/humidity:0"
+#  sample Value = {"id": 0,"rh":60.3}
+
+
+#  Shelly 1 Mini Gen4 "Sensor WC-Light-Switch" and "Relay kitchen exhaust" in a single device
+#
+device_Shelly   = "shelly1minig4-ccba97c08c34"
+#
+topic_switch    = "/status/input:0"
+#  sample Value = {"id":0,"state":false}
+topic_relay    = "/command/switch:0"
+#  sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
+topic_ping     = "/command"
+# possible Value = "announce"(fill announce) / "status_update"(send /status/*)
+
 
 # Vent Wartezeiten
 cfg_anlaufverzoegerung = 15      # [seconds]
@@ -206,7 +194,7 @@ PWM1_GPIO = 13
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 #
-# are we running under systemd or console
+# are we running under systemd or console?
 #
 if os.getenv("INVOCATION_ID")==None:
  # we run at console
@@ -220,7 +208,6 @@ else:
  logger.info("Log goes to journalctl")
 
 # Global Vars "pi" and "client"
-
 pi = pigpio.pi()
 client = mqtt_client.Client(local_device_id)
 client.username_pw_set(mqtt_user, mqtt_passwd)
@@ -284,7 +271,10 @@ def mqtt_event_message(client, userdata, message):
      logger.info(CHAR_DOWN + "MQTT ZULUFT Vent " + str(v))
      pwm_vent_Z(v)
 
-    # command "WC Vent" {0..100} im Moment nur 0|60
+    # command "WC Vent" {0..100} values 0|>0
+    #   "0" terminate overrun
+    #  >"0" initiate overrun similar to run after "a long idle time"
+    #
     if message.topic == local_device_id + cmd_wc:
      v = int(message.payload.decode())
      logger.info(CHAR_DOWN + "MQTT WC Vent " + str(v))
@@ -295,13 +285,8 @@ def mqtt_event_message(client, userdata, message):
     
     # Status change "WC-Lichtschalter" {"true"|"false"}
     if message.topic == device_Shelly + topic_switch:
-     s = json5.loads(message.payload.decode())["state"]
-     logger.info(CHAR_DOWN + "MQTT WC-Licht " + str(s))
-     if s:
-      WC_Light = True
-      time_OFF = 0
-     if not s:
-      WC_Light = False
+     WC_Light = json5.loads(message.payload.decode())["state"]
+     logger.info(CHAR_DOWN + "MQTT WC-Licht " + str(WC_Light))
 
     # Change of "Humidity" {JSON} 
     if message.topic == device_humidity + topic_humidity:
@@ -392,7 +377,7 @@ while True:
    last_log = actual_log
 
   if time_OFF==-1:
-   # Zwangsbelüftung nach langem Stillstand
+   # force echaust after long idle
    logger.info("Vent on after Idle")
    pwm_vent_W(100)
    time.sleep(4)

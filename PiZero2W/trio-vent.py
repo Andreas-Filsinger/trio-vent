@@ -57,7 +57,7 @@ from systemd import journal
 
 # this is trio-vent(ilator) version 
 #
-local_rev            = "184"                    # version / revision number
+local_rev            = "185"                    # version / revision number
 
 #
 # To the mqtt-Broker this program (trio-vent) is like a Device
@@ -93,12 +93,17 @@ mqtt_port   = 1883
 mqtt_user   = "user"
 mqtt_passwd = "user"
 
-#  Shelly H&T Gen. 3 (messuring WC air hummidity)
+#  Shelly H&T G3 (messuring WC air hummidity)
 #
-device_humidity      = "shellyhtg3-543204567354"
+device_humidity_wc   = "shellyhtg3-543204567354"
 topic_humidity       = "/status/humidity:0"
 #  sample Value = {"id": 0,"rh":60.3}
 
+#  Shelly H&T G3 (messuring Outdoor hummidity)
+#
+device_humidity_outdoor = "shellyhtg3-e4b323306910"
+topic_temperature       = "/status/temperature:0"
+# sample Value = {"id": 0,"tC":10.0, "tF":50.1}
 
 #  Shelly 1 Mini Gen4 "Sensor WC-Light-Switch" and "Relay kitchen exhaust" in a single device
 #
@@ -151,22 +156,26 @@ time_LIGHT          = 0
 #
 # WC
 #
-WC_Light            = False    # False=Light off
-WC_Vent             = False    # False=Vent stopped
-WC_Vent_Normal      = 31       # % Speed of Vent
-WC_Vent_Silent      = 23       # % Speed of Vent
-WC_Humidity         = float(0) # actual Humidity Value, 0=Unset
-WC_Humidity_Age     = 0        # age of the Humidity Value, 0=Humidity Unset
+WC_Light            = False     # False=Light off
+WC_Vent             = False     # False=Vent stopped
+WC_Vent_Normal      = 31        # % Speed of Vent
+WC_Vent_Silent      = 23        # % Speed of Vent
+WC_Humidity         = float(0)  # actual Humidity Value in %, 0=Unset
+WC_Temperature      = float(0)  # actual Temperature Value in °C, 0=Unset
+WC_HT_Age           = 0         # age of the Humidity/Temperature Value in seconds, 0=values unset
 
 #
 # KÜCHE
 #
-KUECHE_Vent         = False
+KUECHE_Vent         = False     # False=kitchen vent stopped
 
 #
 # ZULUFT
 #
-ZULUFT_Vent_Percent = 25 
+ZULUFT_Vent_Percent = 25        # the daily default Speed in %
+ZULUFT_Humidity     = float(0)  # the outdoor humidiy in %
+ZULUFT_Temperature  = float(0)  # the outdoor temperature °C
+ZULUFT_HT_Age       = 0         # age of the Humidity/Temperature Value in seconds, 0=values unset
 
 #
 # Wie lange soll der Lüfter noch nachlaufen
@@ -212,6 +221,17 @@ pi = pigpio.pi()
 client = mqtt_client.Client(local_device_id)
 client.username_pw_set(mqtt_user, mqtt_passwd)
 
+# Calculate absolut Humidity in Air from relative humidity and Temperature assuming "normal" Pressure: returns weight Water in g/m³
+#  (c) https://github.com/mcgibbon
+def water_from_HT(Celcius, Humidity, Luftdruck=101325): # Water [g/m³]
+  T = Celcius + 273.15
+  Dichte = Luftdruck / (287.1 * T)
+  es = 611.2 * math.exp(17.67 * (T - 273.15) / (T - 29.65))
+  rvs = 0.622 * es / (Luftdruck - es)
+  rv = Humidity / 100.0 * rvs
+  qv = rv / (1 + rv)
+  return qv * Dichte * 1000
+
 # local "sleep()" used in this world
 def trio_vent_sleep(seconds):
  while seconds>0:
@@ -245,7 +265,9 @@ def power_vent_K(onoff):
 
 def mqtt_event_message(client, userdata, message):
 
-    global KUECHE_Vent, WC_Light, time_OFF, WC_Humidity, WC_Humidity_Age, nachlauf
+    global KUECHE_Vent, WC_Light, time_OFF, nachlauf
+    global WC_Humidity, WC_Temperature, WC_HT_Age
+    global ZULUFT_Humidity, ZULUFT_Temperature, ZULUFT_HT_Age
 
     # command "Küche Vent" {"true"|"false"}
     if message.topic == local_device_id + cmd_kueche:
@@ -288,18 +310,42 @@ def mqtt_event_message(client, userdata, message):
      WC_Light = json5.loads(message.payload.decode())["state"]
      logger.info(CHAR_DOWN + "MQTT WC-Licht " + str(WC_Light))
 
-    # Change of "Humidity" {JSON} 
-    if message.topic == device_humidity + topic_humidity:
+    # Change of WC "Humidity" {JSON} 
+    if message.topic == device_humidity_wc + topic_humidity:
      payload = str(message.payload.decode("utf-8"))
      WC_Humidity = float(json5.loads(payload)["rh"])
-     logger.info(CHAR_DOWN + "MQTT Humidity " + str(WC_Humidity) + "%")
-     WC_Humidity_Age = 1
+     logger.info(CHAR_DOWN + "MQTT WC Humidity " + str(WC_Humidity) + "%")
+     WC_HT_Age = 1
+
+    # Change of WC "Temperature" {JSON} 
+    if message.topic == device_humidity_wc + topic_temperature:
+     payload = str(message.payload.decode("utf-8"))
+     WC_Temperature = float(json5.loads(payload)["tC"])
+     logger.info(CHAR_DOWN + "MQTT WC Temperature " + str(WC_Temperature) + "°C")
+     WC_HT_Age = 1
+
+    # Change of OUTDOOR "Humidity" {JSON} 
+    if message.topic == device_humidity_outdoor + topic_humidity:
+     payload = str(message.payload.decode("utf-8"))
+     ZULUFT_Humidity = float(json5.loads(payload)["rh"])
+     logger.info(CHAR_DOWN + "MQTT ZULUFT Humidity " + str(ZULUFT_Humidity) + "%")
+     ZULUFT_HT_Age = 1
+     
+    # Change of OUTDOOR "Temperature" {JSON} 
+    if message.topic == device_humidity_outdoor + topic_temperature:
+     payload = str(message.payload.decode("utf-8"))
+     ZULUFT_Temperature = float(json5.loads(payload)["tC"])
+     logger.info(CHAR_DOWN + "MQTT ZULUFT Temperature " + str(ZULUFT_Temperature) + "°C")
+     ZULUFT_HT_Age = 1
  
 def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("Connected with result code " + str(rc))
 
     # Remote Device Subscriptions
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str( client.subscribe(device_humidity + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str( client.subscribe(device_humidity_wc + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str( client.subscribe(device_humidity_wc + topic_temperature, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str( client.subscribe(device_humidity_outdoor + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str( client.subscribe(device_humidity_outdoor + topic_temperature, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str( client.subscribe(device_Shelly + topic_switch, qos=1)))
 
     # Own Subscriptions for me to serve
@@ -359,17 +405,24 @@ while True:
   if WC_Vent and not WC_Light:
    nachlauf -= 1
    
-  if WC_Humidity_Age>0:
-   WC_Humidity_Age += 1
+  if WC_HT_Age>0:
+   WC_HT_Age += 1
 
-  # Debug all Parameters, "OFF" is to noisy
-  actual_log = ( " ON=" + str(time_ON) + 
+  if ZULUFT_HT_Age>0:
+   ZULUFT_HT_Age += 1
+
+  # Debug all Parameters, but not "time_OFF" it is too noisy
+  actual_log = ( 
+   " ON=" + str(time_ON) + 
    " LIGHT=" + str(time_LIGHT) + 
    " NL=" + str(nachlauf) +
    " L=" + str(WC_Light) + 
    " V=" + str(WC_Vent) +
    " H=" + str(WC_Humidity) +
-   " K=" + str(KUECHE_Vent)
+   " T=" + str(WC_Temperature) +
+   " K=" + str(KUECHE_Vent) +
+   " h=" + str(ZULUFT_Humidity) + 
+   " t=" + str(ZULUFT_Temperature)
   )
 
   if actual_log!=last_log:
@@ -428,10 +481,17 @@ while True:
    time_OFF = -TIME_AUTO_ON
    nachlauf = -1
    
-  if WC_Humidity_Age>60*50: # = 50 [Min]
-   logger.info("no humidity-value refresh, unset old value to 0")
-   WC_Humidity_Age = 0
+  if WC_HT_Age>60*50: # = 50 [Min]
+   logger.info("no WC humidity-value refresh within 50 minutes -> unset value to 0")
+   WC_HT_Age = 0
    WC_Humidity = float(0)
+   WC_Temperature = float(0)
+
+  if ZULUFT_HT_Age>60*50: # = 50 [Min]
+   logger.info("no ZULUFT humidity-value refresh within 50 minutes -> unset value to 0")
+   ZULUFT_HT_Age = 0
+   ZULUFT_Humidity = float(0)
+   ZULUFT_Temperature = float(0)
    
   daemon.notify("WATCHDOG=1") 
   trio_vent_sleep(1)

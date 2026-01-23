@@ -57,7 +57,7 @@ from systemd import journal
 
 # this is trio-vent(ilator) version 
 #
-local_rev            = "185"                    # version / revision number
+local_rev            = "186"                    # version / revision number
 
 #
 # To the mqtt-Broker this program (trio-vent) is like a Device
@@ -88,7 +88,7 @@ cmd_wc        = "/command/vent-wc"          # 0..100
 # to a ratained message, system B gets the last known value stored by the broker. system B so 
 # must not wait for the next value, wich maybe come in minutes or hours
 #
-mqtt_broker = "192.168.115.10"
+mqtt_broker = "192.168.178.42"
 mqtt_port   = 1883
 mqtt_user   = "user"
 mqtt_passwd = "user"
@@ -109,9 +109,11 @@ topic_temperature       = "/status/temperature:0"
 #
 device_Shelly   = "shelly1minig4-ccba97c08c34"
 #
+cmd_relay    = "/command/switch:0"        # on|off
+
 topic_switch    = "/status/input:0"
 #  sample Value = {"id":0,"state":false}
-topic_relay    = "/command/switch:0"
+topic_relay     = "/status/switch:0"
 #  sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
 topic_ping     = "/command"
 # possible Value = "announce"(fill announce) / "status_update"(send /status/*)
@@ -168,11 +170,12 @@ WC_HT_Age           = 0         # age of the Humidity/Temperature Value in secon
 # KÜCHE
 #
 KUECHE_Vent         = False     # False=kitchen vent stopped
+KUECHE_Relay        = False     # False=Relay is OFF
 
 #
 # ZULUFT
 #
-ZULUFT_Vent_Percent = 25        # the daily default Speed in %
+ZULUFT_Vent_Percent = 28        # the daily default Speed in %
 ZULUFT_Humidity     = float(0)  # the outdoor humidiy in %
 ZULUFT_Temperature  = float(0)  # the outdoor temperature °C
 ZULUFT_HT_Age       = 0         # age of the Humidity/Temperature Value in seconds, 0=values unset
@@ -257,15 +260,15 @@ def pwm_vent_W(percent):
 
 def power_vent_K(onoff):
  if onoff:
-  logger.info("MQTT" + CHAR_UP + " " + topic_relay + " on" + str(client.publish(device_Shelly + topic_relay, payload="on", qos=1))) 
+  logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " on" + str(client.publish(device_Shelly + cmd_relay, payload="on", qos=1))) 
   logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1, retain=True)))
  else:
-  logger.info("MQTT" + CHAR_UP + " " + topic_relay + " off" + str(client.publish(device_Shelly + topic_relay, payload="off", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " off" + str(client.publish(device_Shelly + cmd_relay, payload="off", qos=1)))
   logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1, retain=True)))
 
 def mqtt_event_message(client, userdata, message):
 
-    global KUECHE_Vent, WC_Light, time_OFF, nachlauf
+    global KUECHE_Vent, KUECHE_Relay, WC_Light, time_OFF, nachlauf
     global WC_Humidity, WC_Temperature, WC_HT_Age
     global ZULUFT_Humidity, ZULUFT_Temperature, ZULUFT_HT_Age
 
@@ -310,6 +313,11 @@ def mqtt_event_message(client, userdata, message):
      WC_Light = json5.loads(message.payload.decode())["state"]
      logger.info(CHAR_DOWN + "MQTT WC-Licht " + str(WC_Light))
 
+    # Status change "Relais" {"true"|"false"}
+    if message.topic == device_Shelly + topic_relay:
+     KUECHE_Relay = json5.loads(message.payload.decode())["output"]
+     logger.info(CHAR_DOWN + "MQTT Relay " + str(KUECHE_Relay))
+
     # Change of WC "Humidity" {JSON} 
     if message.topic == device_humidity_wc + topic_humidity:
      payload = str(message.payload.decode("utf-8"))
@@ -342,17 +350,18 @@ def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("Connected with result code " + str(rc))
 
     # Remote Device Subscriptions
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str( client.subscribe(device_humidity_wc + topic_humidity, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str( client.subscribe(device_humidity_wc + topic_temperature, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str( client.subscribe(device_humidity_outdoor + topic_humidity, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str( client.subscribe(device_humidity_outdoor + topic_temperature, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str( client.subscribe(device_Shelly + topic_switch, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str(client.subscribe(device_humidity_wc + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str(client.subscribe(device_humidity_wc + topic_temperature, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str(client.subscribe(device_humidity_outdoor + topic_humidity, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str(client.subscribe(device_humidity_outdoor + topic_temperature, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str(client.subscribe(device_Shelly + topic_switch, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_relay + " " + str(client.subscribe(device_Shelly + topic_relay, qos=1)))
 
     # Own Subscriptions for me to serve
-    logger.info("MQTT" + CHAR_LIKE + " " + cmd_automatic + " " + str( client.subscribe(local_device_id + cmd_automatic, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + cmd_zuluft + " " + str( client.subscribe(local_device_id + cmd_zuluft, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + cmd_kueche + " " + str( client.subscribe(local_device_id + cmd_kueche, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + cmd_wc + " " + str( client.subscribe(local_device_id + cmd_wc, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_automatic + " " + str(client.subscribe(local_device_id + cmd_automatic, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_zuluft + " " + str(client.subscribe(local_device_id + cmd_zuluft, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_kueche + " " + str(client.subscribe(local_device_id + cmd_kueche, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + cmd_wc + " " + str(client.subscribe(local_device_id + cmd_wc, qos=1)))
 
 def mqtt_event_disconnect(client, userdata, rc):
     logger.info("MQTT event disconnect, giving up")
@@ -420,7 +429,7 @@ while True:
    " V=" + str(WC_Vent) +
    " H=" + str(WC_Humidity) +
    " T=" + str(WC_Temperature) +
-   " K=" + str(KUECHE_Vent) +
+   " K=" + str(KUECHE_Vent) + "," + str(KUECHE_Relay) +
    " h=" + str(ZULUFT_Humidity) + 
    " t=" + str(ZULUFT_Temperature)
   )

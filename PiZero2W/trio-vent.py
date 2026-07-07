@@ -3,7 +3,6 @@
 import os
 import sys
 import configparser
-import pigpio
 from paho.mqtt import client as mqtt_client
 import json5
 import time
@@ -13,26 +12,73 @@ from systemd import journal
 
 '''
 
- trio-vent  (c) 2025 Andreas Filsinger, GPL-Licence
+ trio-vent  (c) 2025-2026 Andreas Filsinger, GPL-Licence
  =========
 
- * control two adjustable exhaust fan motors by hardware PWM
- * control a third vent by a Shelly 1 relay
- * mime a MQTT-device (trio-vent-xxx) for Home Assistant or the GUI
+ overview:
+
+ * control three vents
+   "Z" for fresh Air
+   "W" for WC exhaust
+   "K" for the kitchen exhaust
+ * use "WC-Light" and "WC-Humidity" as input sensors
+ 
+ 
+ pwm-use:
+ 
+ * "Z" and "W" are connected to PWM motorcontrollers (2x KEMO M240)
+ * the speed can be fine tuned
+ * hardware PWM of a Raspberry Pi Zero 2W ist used
+
+
+
+ * "K" is controlled by a Shelly 1
+  control two adjustable exhaust fan motors by hardware PWM
+ * control a third vent (ON|OFF) by a Shelly 1 relay
+
+ Wi Fi Signal Strength:
+ 
+ cat /proc/net/wireless
+
+
+ sensors:
+ 
+ * the WC-Light switch
+ * the WC-Humidity
+ 
+ 
+
+ high humidity:
+
+ * check the WC-Light Switch for use-detection
+ * check WC room humidity and outdoor humidity
+ * check Shelly and System Temperature for Failure/Oberheat Detection
+ * check Outdoor H
+
+ mqtt use:
+ 
+ * read Shelly Humidity/Temperature values
+ * read Shelly relay status
+ * write Shelly relay ON|OFF for Kitchen-Motor
+ 
+ mqtt serve:
+
+ * mime a MQTT-device (trio-vent-xxx) for Home Assistant integration or the GUI
  * let Home Assistant get control by several "command" topics
  * send the vent-Status (0..100) to MQTT Broker via "status/#"
  * read WC-Room-Humidity from a Shelly Temp & Humidity Device via MQTT
  * Read WC-Light-Switch Status ("SW") from a Shelly 1 via MQTT
  * Write Relay 0/1 ("O") to a Shelly 1 via MQTT to control the third vent
 
- Logik:
+ logic:
 
- * wait to speed up WC Vent
+ * wait motors to speed up at full power, than slow down to the speed wanted
  * short, long and longest stay triggers short/long motor overrun
- * a bit more fresh if WC exhaust runs
+ * (a bit more fresh air if WC exhaust runs)
  * full power fresh air if the kitchen exhaust runs
  * run WC exhaust if humidity value is over adjustable value
  * ignore humdidity sensor if not changed in 50 minutes
+ * report the power meter value to log for diagnose
 
  KEMO M240 (PWM Motor Controller, tow of them)
  =============================================
@@ -42,22 +88,19 @@ from systemd import journal
  Raspberry Pi Zero 2 W
  =====================
   pwmchip0
-   GPIO 18, 3,3 V 1 kHz
-   GPIO 13, 3,3 V 1 kHz
+   pwm0, GPIO 18, 3,3 V 1 kHz -> vent Zuluft (fresh air) 
+   pwm1, GPIO 13, 3,3 V 1 kHz -> vent WC (exhaust)
 
  Raspberry Pi 5 4 Gbyte
  ======================
-  User GUI
+  User GUI as the controll unit
 
- Raspberry Pi 400
- ================
-  Home Assistant
 
 '''
 
 # this is trio-vent(ilator) version 
 #
-local_rev            = "186"                    # version / revision number
+local_rev            = "187"                    # version / revision number
 
 #
 # To the mqtt-Broker this program (trio-vent) is like a Device
@@ -66,10 +109,13 @@ local_rev            = "186"                    # version / revision number
 local_device_id      = "trio-vent-106031846322" # software device
 
 # R
+status_version   = "/status/rev"              # Software Version String as a 3 digit number
 status_zuluft    = "/status/vent-zuluft"      # 0..100
 status_kueche    = "/status/vent-kueche"      # true | false
 status_wc        = "/status/vent-wc"          # 0..100
-status_version   = "/status/rev"              # Software Version String
+status_power     = "/status/power"            # System Power Consumption in [W]
+status_temp1     = "/status/cpu_temp"         # System Internal Temp: Raspberry Pi CPU
+status_temp2     = "/status/shelly_temp"      # System Internal Temp: Shelly Device
  
 # R/W
 cmd_automatic = "/command/automatic"        # true | false
@@ -84,11 +130,11 @@ cmd_wc        = "/command/vent-wc"          # 0..100
 # you can send out a message (="publish") so all subscribers get it
 # The Broker is not persistent so values from "missed" messages can not be retrieved
 # But, if a Client publish a value with a "retain"-Flag the Broker hold the value for a time
-# after the publish by system A, if a client system B is a bit late, in the moment subscribing 
+# after the publish by system A, if a client system B is a bit late - still unconnected, in the moment subscribing 
 # to a ratained message, system B gets the last known value stored by the broker. system B so 
 # must not wait for the next value, wich maybe come in minutes or hours
 #
-mqtt_broker = "192.168.178.42"
+mqtt_broker = "192.168.178.27"
 mqtt_port   = 1883
 mqtt_user   = "user"
 mqtt_passwd = "user"
@@ -105,7 +151,7 @@ device_humidity_outdoor = "shellyhtg3-e4b323306910"
 topic_temperature       = "/status/temperature:0"
 # sample Value = {"id": 0,"tC":10.0, "tF":50.1}
 
-#  Shelly 1 Mini Gen4 "Sensor WC-Light-Switch" and "Relay kitchen exhaust" in a single device
+#  Shelly 1 Mini Gen4: (dual use) "Sensor WC-Light-Switch" and "Relay kitchen exhaust" in a single device
 #
 device_Shelly   = "shelly1minig4-ccba97c08c34"
 #
@@ -118,6 +164,27 @@ topic_relay     = "/status/switch:0"
 topic_ping     = "/command"
 # possible Value = "announce"(fill announce) / "status_update"(send /status/*)
 
+#  Shelly 1PM Mini Gen3: (dual use) "Power Meter for the 3 Motors" and "Relay to POWER-OFF or POWER-ON the whole System (Reset)"
+#
+device_1PM = "shelly1pmminig3-48f6ee8d12dc"
+#
+topic_power = "/status/switch:0"
+# sample Value {"id":0, "source":"HTTP_in", "output":true, "apower":25.7, "voltage":239.7, "freq":50.2, "current":0.188, "aenergy":{"total":913.252,"by_minute":[404.631,404.631,404.631],"minute_ts":1782936360}, "ret_aenergy":{"total":0.000,"by_minute":[0.000,0.000,0.000],"minute_ts":1782936360},"temperature":{"tC":68.1, "tF":154.6}}
+# Interessante Werte:
+#  output true|false
+#  apower n
+#  temperature.tC
+# selbst Reset via:
+#  "/command/switch:0" := "on" | "off"
+#
+
+#
+# [OPTIONAL]: ein Shelly 2PM, er könnte alle 4 Funktionen leisten (daher nur 1 Shelly nicht 2 Shellys nötig)
+#  1) P: (PM1+PM2) Fail Detection
+#  2) Relay 1: System Power
+#  3) Relay 2: Vent Küche
+#  4) SW1: WC Light
+#
 
 # Vent Wartezeiten
 cfg_anlaufverzoegerung = 15      # [seconds]
@@ -136,6 +203,12 @@ cfg_entfeuchtung_an    = 70       # [%], "0" = unknown
 
 TIME_AUTO_ON           = 24*60*60 # [seconds] Forced ON after n seconds of idle
 
+
+#
+# time_RUN, ein Zeitzähler [Sekunden] seit wann das Programm schon läuft
+#
+time_RUN            = 0
+
 #
 # time_OFF, ein Zeitzähler [Sekunden] von -TIME_AUTO_ON .. 0 .. cfg_nachlauf_lang
 # 
@@ -146,12 +219,12 @@ TIME_AUTO_ON           = 24*60*60 # [seconds] Forced ON after n seconds of idle
 time_OFF            = -TIME_AUTO_ON
 
 #
-# time_ON, ein Zeitzähler [Sekunden] der misst, wielange der Ventilator schon AN ist
+# time_ON, ein Zeitzähler [Sekunden] der misst, wie lange der Ventilator schon AN ist
 #
 time_ON             = 0
 
 #
-# time_LIGHT, ein Zeitzähler [Sekunden] der misst, wielange das Licht schon AN ist
+# time_LIGHT, ein Zeitzähler [Sekunden] der misst, wie lange das Licht schon AN ist
 #
 time_LIGHT          = 0
 
@@ -181,6 +254,14 @@ ZULUFT_Temperature  = float(0)  # the outdoor temperature °C
 ZULUFT_HT_Age       = 0         # age of the Humidity/Temperature Value in seconds, 0=values unset
 
 #
+# SYSTEM 
+#
+SYSTEM_Power               = 0         # System Power Consumption
+SYSTEM_Power_Age           = 0         # age of the Power Value 
+SYSTEM_Shelly_Temperature  = 0         # Temp of 1PM/2PM
+SYSTEM_CPU_Temperature     = 0         # Temp of CPU
+
+#
 # Wie lange soll der Lüfter noch nachlaufen
 #
 nachlauf           = -1
@@ -193,36 +274,19 @@ CHAR_DOWN = "\u2193"
 CHAR_LIKE = "\u2665"
  
 # PWM globals
-PWM_FREQUENCY = 1000
-PWM_PERCENT_FACTOR = 10000
+PWM_FREQUENCY = 1000.0
 
-# Zuluft PWM
+# Zuluft PWM 18
 PWM0_GPIO = 18
 
-# WC Bad Abluft PWM
+# WC Bad Abluft PWM 13
 PWM1_GPIO = 13
 
-# Logging Setup Systemd/Console
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-#
-# are we running under systemd or console?
-#
-if os.getenv("INVOCATION_ID")==None:
- # we run at console
- console_handler = logging.StreamHandler(sys.stdout)
- logger.addHandler(console_handler)
- logger.info("Log goes to console")
-else:
- # we run as a systemd-service
- journald_handler = journal.JournalHandler(SYSLOG_IDENTIFIER="trio-vent")
- logger.addHandler(journald_handler)
- logger.info("Log goes to journalctl")
-
-# Global Vars "pi" and "client"
-pi = pigpio.pi()
-client = mqtt_client.Client(local_device_id)
-client.username_pw_set(mqtt_user, mqtt_passwd)
+# writef to send commands to linux interoperability files
+def writef(file, command):
+  with open(file, 'w') as interop_file:
+    interop_file.write(command)
+  
 
 # Calculate absolut Humidity in Air from relative humidity and Temperature assuming "normal" Pressure: returns weight Water in g/m³
 #  (c) https://github.com/mcgibbon
@@ -234,6 +298,14 @@ def water_from_HT(Celcius, Humidity, Luftdruck=101325): # Water [g/m³]
   rv = Humidity / 100.0 * rvs
   qv = rv / (1 + rv)
   return qv * Dichte * 1000
+
+def get_cpu_temp(): # [°C]
+    # Open the system thermal zone file
+    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+        temp_raw = f.read()
+    
+    # Convert the millidegrees string to a float in Celsius
+    return float(temp_raw) / 1000.0
 
 # local "sleep()" used in this world
 def trio_vent_sleep(seconds):
@@ -247,7 +319,11 @@ def pwm_vent_Z(percent):
   percent=100
  if percent<0:
   percent=0 
- pi.hardware_PWM(PWM0_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
+ writef('/sys/class/pwm/pwmchip0/pwm0/duty_cycle', str(int(1000000000/PWM_FREQUENCY * percent / 100.0)))
+ if percent==0:
+  writef('/sys/class/pwm/pwmchip0/pwm0/enable', '0')
+ else:
+  writef('/sys/class/pwm/pwmchip0/pwm0/enable', '1') 
  logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1, retain=True)))
  
 def pwm_vent_W(percent): 
@@ -255,7 +331,12 @@ def pwm_vent_W(percent):
   percent=100
  if percent<0:
   percent=0 
- pi.hardware_PWM(PWM1_GPIO, PWM_FREQUENCY, percent*PWM_PERCENT_FACTOR)
+ writef('/sys/class/pwm/pwmchip0/pwm1/duty_cycle', str(int(1000000000/PWM_FREQUENCY * percent / 100.0)))
+ if percent==0:
+  writef('/sys/class/pwm/pwmchip0/pwm1/enable', '0')
+ else:
+  writef('/sys/class/pwm/pwmchip0/pwm1/enable', '1')
+
  logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1, retain=True)))
 
 def power_vent_K(onoff):
@@ -271,6 +352,7 @@ def mqtt_event_message(client, userdata, message):
     global KUECHE_Vent, KUECHE_Relay, WC_Light, time_OFF, nachlauf
     global WC_Humidity, WC_Temperature, WC_HT_Age
     global ZULUFT_Humidity, ZULUFT_Temperature, ZULUFT_HT_Age
+    global SYSTEM_Power, SYSTEM_Power_Age
 
     # command "Küche Vent" {"true"|"false"}
     if message.topic == local_device_id + cmd_kueche:
@@ -345,6 +427,15 @@ def mqtt_event_message(client, userdata, message):
      ZULUFT_Temperature = float(json5.loads(payload)["tC"])
      logger.info(CHAR_DOWN + "MQTT ZULUFT Temperature " + str(ZULUFT_Temperature) + "°C")
      ZULUFT_HT_Age = 1
+     
+    # Change of System-Power / Shelly-Temp {JSON}
+    if message.topic == device_1PM + topic_power:
+     payload = str(message.payload.decode("utf-8"))
+     SYSTEM_Power = float(json5.loads(payload)["apower"])
+     SYSTEM_Shelly_Temperature = float(json5.loads(payload)["temperature"]["tC"])
+     logger.info(CHAR_DOWN + "MQTT POWER " + str(SYSTEM_Power) + " W")
+     logger.info(CHAR_DOWN + "MQTT Temp " + str(SYSTEM_Shelly_Temperature) + " °C")
+     SYSTEM_Power_Age = 1
  
 def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("Connected with result code " + str(rc))
@@ -356,6 +447,7 @@ def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str(client.subscribe(device_humidity_outdoor + topic_temperature, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str(client.subscribe(device_Shelly + topic_switch, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + topic_relay + " " + str(client.subscribe(device_Shelly + topic_relay, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_power + " " + str(client.subscribe(device_1PM + topic_power, qos=1)))
 
     # Own Subscriptions for me to serve
     logger.info("MQTT" + CHAR_LIKE + " " + cmd_automatic + " " + str(client.subscribe(local_device_id + cmd_automatic, qos=1)))
@@ -367,9 +459,39 @@ def mqtt_event_disconnect(client, userdata, rc):
     logger.info("MQTT event disconnect, giving up")
     exit(1)
 
-# Connect to the MQTT Server
+###########
+# M A I N #
+###########
 
+
+# Logging Setup Systemd/Console
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+#
+# are we running under systemd or console?
+#
+if os.getenv("INVOCATION_ID")==None:
+ # we run at console
+ console_handler = logging.StreamHandler(sys.stdout)
+ logger.addHandler(console_handler)
+ logger.info("Log goes to console")
+else:
+ # we run as a systemd-service
+ journald_handler = journal.JournalHandler(SYSLOG_IDENTIFIER="trio-vent")
+ logger.addHandler(journald_handler)
+ logger.info("Log goes to journalctl")
+
+# Activate the 2 Hardware PWM Channels
+if not(os.path.isdir('/sys/class/pwm/pwmchip0/pwm0/')):
+ writef('/sys/class/pwm/pwmchip0/export', '0')
+if not(os.path.isdir('/sys/class/pwm/pwmchip0/pwm1/')):
+ writef('/sys/class/pwm/pwmchip0/export', '1')
+
+# Connect to the MQTT Server
+#
 logger.info("MQTT connect ...")
+client = mqtt_client.Client(local_device_id)
+client.username_pw_set(mqtt_user, mqtt_passwd)
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
 client.on_disconnect = mqtt_event_disconnect
@@ -377,14 +499,18 @@ client.connect(mqtt_broker, mqtt_port, keepalive=20)
 trio_vent_sleep(3)
 
 # Vent Motor Speed up
-
+#
 logger.info("Motor Init ...")
+writef('/sys/class/pwm/pwmchip0/pwm0/enable', '0')
+writef('/sys/class/pwm/pwmchip0/pwm0/period', str(int(1000000000.0/PWM_FREQUENCY)))
+writef('/sys/class/pwm/pwmchip0/pwm1/enable', '0')
+writef('/sys/class/pwm/pwmchip0/pwm1/period', str(int(1000000000.0/PWM_FREQUENCY)))
 pwm_vent_Z(100)
 pwm_vent_W(100)
 trio_vent_sleep(6)
 
 # Vent initial Setup
-
+#
 pwm_vent_Z(ZULUFT_Vent_Percent)
 pwm_vent_W(0)
 
@@ -399,6 +525,7 @@ while True:
 
   # Clocks
   time_OFF += 1
+  time_RUN += 1
 
   if WC_Vent:
    time_ON += 1
@@ -446,6 +573,11 @@ while True:
    pwm_vent_W(WC_Vent_Silent)
    WC_Vent = True
    nachlauf = cfg_nachlauf_lang
+   
+  if time_RUN % 10 == 0:
+   SYSTEM_CPU_Temperature = get_cpu_temp()
+   logger.info("CPU Temp is " + str(SYSTEM_CPU_Temperature) + " °C")
+   ###
      
   if time_LIGHT==cfg_anlaufverzoegerung:
    # Belüftung nun an

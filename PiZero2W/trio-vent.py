@@ -100,7 +100,7 @@ from systemd import journal
 
 # this is trio-vent(ilator) version 
 #
-local_rev            = "187"                    # version / revision number
+local_rev            = "189"                    # version / revision number
 
 #
 # To the mqtt-Broker this program (trio-vent) is like a Device
@@ -109,19 +109,18 @@ local_rev            = "187"                    # version / revision number
 local_device_id      = "trio-vent-106031846322" # software device
 
 # R
-status_version   = "/status/rev"              # Software Version String as a 3 digit number
-status_zuluft    = "/status/vent-zuluft"      # 0..100
-status_kueche    = "/status/vent-kueche"      # true | false
-status_wc        = "/status/vent-wc"          # 0..100
-status_power     = "/status/power"            # System Power Consumption in [W]
-status_temp1     = "/status/cpu_temp"         # System Internal Temp: Raspberry Pi CPU
-status_temp2     = "/status/shelly_temp"      # System Internal Temp: Shelly Device
- 
+status_version       = "/status/rev"              # Software Version String as a 3 digit number
+status_zuluft        = "/status/vent-zuluft"      # 0..100
+status_kueche        = "/status/vent-kueche"      # true | false
+status_wc            = "/status/vent-wc"          # 0..100
+status_power         = "/status/power"            # System Power Consumption in [W]
+status_temperature   = "/status/temperature"      # System Internal Temp: Raspberry Pi CPU, Shelly Device
+
 # R/W
-cmd_automatic = "/command/automatic"        # true | false
-cmd_zuluft    = "/command/vent-zuluft"      # 0..100
-cmd_kueche    = "/command/vent-kueche"      # true | false
-cmd_wc        = "/command/vent-wc"          # 0..100
+cmd_automatic        = "/command/automatic"        # true | false
+cmd_zuluft           = "/command/vent-zuluft"      # 0..100
+cmd_kueche           = "/command/vent-kueche"      # true | false
+cmd_wc               = "/command/vent-wc"          # 0..100
 
 #
 # a MQTT broker is a 24/7 message relay/örtöö for topics
@@ -153,16 +152,21 @@ topic_temperature       = "/status/temperature:0"
 
 #  Shelly 1 Mini Gen4: (dual use) "Sensor WC-Light-Switch" and "Relay kitchen exhaust" in a single device
 #
-device_Shelly   = "shelly1minig4-ccba97c08c34"
+device_Shelly1   = "shelly1minig4-ccba97c08c34"
 #
 cmd_relay    = "/command/switch:0"        # on|off
-
+#
 topic_switch    = "/status/input:0"
 #  sample Value = {"id":0,"state":false}
 topic_relay     = "/status/switch:0"
 #  sample Value = {"id":0, "source":"WS_in", "output":false,"temperature":{"tC":51.0, "tF":123.8}}
 topic_ping     = "/command"
-# possible Value = "announce"(fill announce) / "status_update"(send /status/*)
+# to get actual values of a sleeping Shelly 1 device:
+# /command/switch:0 := status_update  "führt zu einem Update des status/switch:0, also ich bekomme Infos wie das Relays steht"
+# /command := status_update "führt zu einem update aller status meldungen auch input:0 also wie steht der Eingang "SW"
+#
+
+# possible Value = "announce"(fill announce) / (input:0|switch:0) "status_update"(send /status/*)
 
 #  Shelly 1PM Mini Gen3: (dual use) "Power Meter for the 3 Motors" and "Relay to POWER-OFF or POWER-ON the whole System (Reset)"
 #
@@ -210,7 +214,9 @@ TIME_AUTO_ON           = 24*60*60 # [seconds] Forced ON after n seconds of idle
 time_RUN            = 0
 
 #
-# time_OFF, ein Zeitzähler [Sekunden] von -TIME_AUTO_ON .. 0 .. cfg_nachlauf_lang
+# time_OFF, ein Zeitzähler [Sekunden] seit wann der WC Ventilator aus ist
+#
+# von -TIME_AUTO_ON .. 0 .. cfg_nachlauf_lang
 # 
 # -x .. -1                      wartet auf Auto-ON
 # 0 .. cfg_anlaufverzoegerung   verzögert den Anlauf
@@ -219,7 +225,7 @@ time_RUN            = 0
 time_OFF            = -TIME_AUTO_ON
 
 #
-# time_ON, ein Zeitzähler [Sekunden] der misst, wie lange der Ventilator schon AN ist
+# time_ON, ein Zeitzähler [Sekunden] der misst, wie lange der WC Ventilator schon AN ist
 #
 time_ON             = 0
 
@@ -242,8 +248,8 @@ WC_HT_Age           = 0         # age of the Humidity/Temperature Value in secon
 #
 # KÜCHE
 #
-KUECHE_Vent         = False     # False=kitchen vent stopped
-KUECHE_Relay        = False     # False=Relay is OFF
+KUECHE_Vent         = False     # False=kitchen vent stopped  
+KUECHE_Relay        = False     # False=Relay is OFF          is set by MQTT
 
 #
 # ZULUFT
@@ -256,10 +262,13 @@ ZULUFT_HT_Age       = 0         # age of the Humidity/Temperature Value in secon
 #
 # SYSTEM 
 #
-SYSTEM_Power               = 0         # System Power Consumption
-SYSTEM_Power_Age           = 0         # age of the Power Value 
-SYSTEM_Shelly_Temperature  = 0         # Temp of 1PM/2PM
-SYSTEM_CPU_Temperature     = 0         # Temp of CPU
+SYSTEM_Power                     = 0         # System Power Consumption
+SYSTEM_Power_Age                 = 0         # age of the Power Value 
+SYSTEM_Power_Last                = 0         # last Reported Power Value +-2 W 
+SYSTEM_Shelly_Temperature        = 0         # Temp of 1PM/2PM
+SYSTEM_Shelly_Temperature_Last   = 0         # zuletzt übertragener Wert
+SYSTEM_CPU_Temperature           = 0         # Temp of CPU
+SYSTEM_CPU_Temperature_Last      = 0         # zuletzt übertragener Wert
 
 #
 # Wie lange soll der Lüfter noch nachlaufen
@@ -336,15 +345,14 @@ def pwm_vent_W(percent):
   writef('/sys/class/pwm/pwmchip0/pwm1/enable', '0')
  else:
   writef('/sys/class/pwm/pwmchip0/pwm1/enable', '1')
-
  logger.info("MQTT" + CHAR_UP + " " + status_wc + " " + str(percent) + "% " + str(client.publish(local_device_id + status_wc, payload=percent, qos=1, retain=True)))
 
 def power_vent_K(onoff):
  if onoff:
-  logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " on" + str(client.publish(device_Shelly + cmd_relay, payload="on", qos=1))) 
+  logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " on" + str(client.publish(device_Shelly1 + cmd_relay, payload="on", qos=1))) 
   logger.info("MQTT" + CHAR_UP + " " + status_kueche + " true" + str(client.publish(local_device_id + status_kueche, payload="true", qos=1, retain=True)))
  else:
-  logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " off" + str(client.publish(device_Shelly + cmd_relay, payload="off", qos=1)))
+  logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " off" + str(client.publish(device_Shelly1 + cmd_relay, payload="off", qos=1)))
   logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1, retain=True)))
 
 def mqtt_event_message(client, userdata, message):
@@ -353,6 +361,7 @@ def mqtt_event_message(client, userdata, message):
     global WC_Humidity, WC_Temperature, WC_HT_Age
     global ZULUFT_Humidity, ZULUFT_Temperature, ZULUFT_HT_Age
     global SYSTEM_Power, SYSTEM_Power_Age
+    global SYSTEM_Shelly_Temperature
 
     # command "Küche Vent" {"true"|"false"}
     if message.topic == local_device_id + cmd_kueche:
@@ -391,12 +400,12 @@ def mqtt_event_message(client, userdata, message):
       time_OFF=-2
     
     # Status change "WC-Lichtschalter" {"true"|"false"}
-    if message.topic == device_Shelly + topic_switch:
+    if message.topic == device_Shelly1 + topic_switch:
      WC_Light = json5.loads(message.payload.decode())["state"]
      logger.info(CHAR_DOWN + "MQTT WC-Licht " + str(WC_Light))
 
     # Status change "Relais" {"true"|"false"}
-    if message.topic == device_Shelly + topic_relay:
+    if message.topic == device_Shelly1 + topic_relay:
      KUECHE_Relay = json5.loads(message.payload.decode())["output"]
      logger.info(CHAR_DOWN + "MQTT Relay " + str(KUECHE_Relay))
 
@@ -445,8 +454,8 @@ def mqtt_event_connect(client, userdata, flags, rc):
     logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str(client.subscribe(device_humidity_wc + topic_temperature, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + topic_humidity + " " + str(client.subscribe(device_humidity_outdoor + topic_humidity, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + topic_temperature + " " + str(client.subscribe(device_humidity_outdoor + topic_temperature, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str(client.subscribe(device_Shelly + topic_switch, qos=1)))
-    logger.info("MQTT" + CHAR_LIKE + " " + topic_relay + " " + str(client.subscribe(device_Shelly + topic_relay, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_switch + " " + str(client.subscribe(device_Shelly1 + topic_switch, qos=1)))
+    logger.info("MQTT" + CHAR_LIKE + " " + topic_relay + " " + str(client.subscribe(device_Shelly1 + topic_relay, qos=1)))
     logger.info("MQTT" + CHAR_LIKE + " " + topic_power + " " + str(client.subscribe(device_1PM + topic_power, qos=1)))
 
     # Own Subscriptions for me to serve
@@ -496,7 +505,11 @@ client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
 client.on_disconnect = mqtt_event_disconnect
 client.connect(mqtt_broker, mqtt_port, keepalive=20)
-trio_vent_sleep(3)
+trio_vent_sleep(1)
+
+# trigger Shelly1 MQTT status
+logger.info("MQTT" + CHAR_UP + " Shelly 1 initial Values" + str( client.publish(device_Shelly1 + topic_ping, payload="status_update", qos=1)))
+trio_vent_sleep(1)
 
 # Vent Motor Speed up
 #
@@ -564,6 +577,10 @@ while True:
   if actual_log!=last_log:
    logger.info("OFF=" + str(time_OFF) + actual_log)
    last_log = actual_log
+   
+  if abs(SYSTEM_Power - SYSTEM_Power_Last)>1.9:
+   SYSTEM_Power_Last = SYSTEM_Power
+   client.publish(local_device_id + status_power, str(int(SYSTEM_Power)), qos=1, retain=True)
 
   if time_OFF==-1:
    # force echaust after long idle
@@ -574,11 +591,14 @@ while True:
    WC_Vent = True
    nachlauf = cfg_nachlauf_lang
    
-  if time_RUN % 10 == 0:
+  if time_RUN % 3 == 0:
    SYSTEM_CPU_Temperature = get_cpu_temp()
-   logger.info("CPU Temp is " + str(SYSTEM_CPU_Temperature) + " °C")
-   ###
-     
+   if (SYSTEM_CPU_Temperature>0) and (SYSTEM_Shelly_Temperature>0):
+    if (abs(SYSTEM_Shelly_Temperature-SYSTEM_Shelly_Temperature_Last)>1.9) or (abs(SYSTEM_CPU_Temperature-SYSTEM_CPU_Temperature_Last)>1.9):
+     SYSTEM_Shelly_Temperature_Last = SYSTEM_Shelly_Temperature
+     SYSTEM_CPU_Temperature_Last = SYSTEM_CPU_Temperature
+     client.publish(local_device_id + status_temperature, f'{{"cpu":{SYSTEM_CPU_Temperature:.1f},"shelly":{SYSTEM_Shelly_Temperature:.1f}}}', qos=1, retain=True)
+    
   if time_LIGHT==cfg_anlaufverzoegerung:
    # Belüftung nun an
    if not WC_Vent:

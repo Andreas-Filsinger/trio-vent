@@ -61,7 +61,7 @@ from systemd import journal
  * read Shelly relay status
  * write Shelly relay ON|OFF for Kitchen-Motor
  
- mqtt serve:
+ mqtt publications:
 
  * mime a MQTT-device (trio-vent-xxx) for Home Assistant integration or the GUI
  * let Home Assistant get control by several "command" topics
@@ -100,7 +100,7 @@ from systemd import journal
 
 # this is trio-vent(ilator) version 
 #
-local_rev            = "189"                    # version / revision number
+local_rev            = "190"                    # version / revision number
 
 #
 # To the mqtt-Broker this program (trio-vent) is like a Device
@@ -109,6 +109,7 @@ local_rev            = "189"                    # version / revision number
 local_device_id      = "trio-vent-106031846322" # software device
 
 # R
+status_online        = "/online"                  # 
 status_version       = "/status/rev"              # Software Version String as a 3 digit number
 status_zuluft        = "/status/vent-zuluft"      # 0..100
 status_kueche        = "/status/vent-kueche"      # true | false
@@ -501,6 +502,7 @@ if not(os.path.isdir('/sys/class/pwm/pwmchip0/pwm1/')):
 logger.info("MQTT connect ...")
 client = mqtt_client.Client(local_device_id)
 client.username_pw_set(mqtt_user, mqtt_passwd)
+client.will_set(local_device_id + status_online, payload="false", qos=1, retain=True)
 client.on_connect = mqtt_event_connect
 client.on_message = mqtt_event_message
 client.on_disconnect = mqtt_event_disconnect
@@ -532,6 +534,7 @@ actual_log = ""
 
 daemon.notify('READY=1')
 client.publish(local_device_id + status_version, local_rev, qos=1, retain=True)
+client.publish(local_device_id + status_online, "true", qos=1, retain=True)
 logger.info("trio-vent Rev. " + local_rev + " startup complete")
 
 while True:
@@ -580,7 +583,7 @@ while True:
    
   if abs(SYSTEM_Power - SYSTEM_Power_Last)>1.9:
    SYSTEM_Power_Last = SYSTEM_Power
-   client.publish(local_device_id + status_power, str(int(SYSTEM_Power)), qos=1, retain=True)
+   logger.info("MQTT" + CHAR_UP + f" Power {SYSTEM_Power} W " + str(client.publish(local_device_id + status_power, str(int(SYSTEM_Power)), qos=1, retain=True)))
 
   if time_OFF==-1:
    # force echaust after long idle
@@ -597,7 +600,7 @@ while True:
     if (abs(SYSTEM_Shelly_Temperature-SYSTEM_Shelly_Temperature_Last)>1.9) or (abs(SYSTEM_CPU_Temperature-SYSTEM_CPU_Temperature_Last)>1.9):
      SYSTEM_Shelly_Temperature_Last = SYSTEM_Shelly_Temperature
      SYSTEM_CPU_Temperature_Last = SYSTEM_CPU_Temperature
-     client.publish(local_device_id + status_temperature, f'{{"cpu":{SYSTEM_CPU_Temperature:.1f},"shelly":{SYSTEM_Shelly_Temperature:.1f}}}', qos=1, retain=True)
+     logger.info("MQTT" + CHAR_UP + f" CPU-Temperature {SYSTEM_CPU_Temperature:.1f} °C, Shelly-Temperature {SYSTEM_Shelly_Temperature:.1f} °C " + str(client.publish(local_device_id + status_temperature, f'{{"cpu":{SYSTEM_CPU_Temperature:.1f},"shelly":{SYSTEM_Shelly_Temperature:.1f}}}', qos=1, retain=True)))
     
   if time_LIGHT==cfg_anlaufverzoegerung:
    # Belüftung nun an

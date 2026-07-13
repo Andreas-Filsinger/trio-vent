@@ -93,14 +93,25 @@ from systemd import journal
 
  Raspberry Pi 5 4 Gbyte
  ======================
-  User GUI as the controll unit
+  User GUI as the control unit
 
 
 '''
 
 # this is trio-vent(ilator) version 
 #
-local_rev            = "190"                    # version / revision number
+local_rev            = "191"                    # version / revision number
+
+# this constant values are results of ./trio-vent -t , messurement of all power-consumers
+# messurements goes to trio-vent.txt
+# all values in W / all arrays go from 100 % Power down to 0 % Power
+# a motor can not start at <20% of control-fade
+# a motor may come to a complete stop at <10% of control-fade
+#
+POWER_IDLE = 3.7
+POWER_K    = 43.2
+POWER_W    = (46.6,46.6,46.6,46.7,46.7,46.7,46.7,46.7,46.7,46.9,46.9,46.9,46.9,46.9,46.9,47.2,47.2,47.2,47.2,47.2,47.2,47.0,47.0,47.0,47.0,47.0,47.0,46.9,46.9,46.9,46.9,46.9,46.9,46.1,46.1,46.1,46.1,46.1,46.1,46.1,46.1,46.1,46.1,46.1,46.1,46.3,46.3,46.3,46.3,46.3,46.3,46.3,46.3,46.3,46.3,46.3,46.3,46.9,46.9,46.9,46.9,46.9,47.8,48.3,48.3,48.3,48.3,48.3,50.5,51.2,52.1,26.7,24.9,23.7,22.0,20.6,19.2,17.7,15.9,14.8,13.3,12.0,10.7,9.5,8.4,8.4,7.3,5.9,4.9,4.2,3.6,2.6,2.6,2.0,1.6,1.6,0.8,0.6,0.2,0.2,0.2)
+POWER_Z    = (41.8,41.8,41.8,41.8,41.8,41.8,41.7,41.7,41.7,41.7,41.7,41.7,41.6,41.6,41.6,41.6,41.6,41.6,41.6,41.6,41.6,41.6,41.6,41.8,41.8,41.8,41.8,41.8,41.8,41.4,41.4,41.4,41.4,41.4,41.4,41.4,40.5,39.9,39.9,39.9,39.9,39.9,38.5,37.6,37.6,37.6,37.6,35.4,35.0,35.0,33.7,33.1,33.1,33.1,31.5,31.2,31.2,31.2,34.5,35.7,36.5,36.6,36.6,38.5,39.1,40.0,31.6,24.9,23.8,23.8,23.8,22.3,21.0,21.0,19.6,19.6,17.8,16.7,15.6,14.5,13.5,12.2,11.2,10.1,8.7,7.7,7.1,5.8,5.3,4.3,4.3,3.1,2.5,2.0,1.5,1.2,1.0,1.0,0.2,-0.1,-0.1)
 
 #
 # To the mqtt-Broker this program (trio-vent) is like a Device
@@ -245,6 +256,7 @@ WC_Vent_Silent      = 23        # % Speed of Vent
 WC_Humidity         = float(0)  # actual Humidity Value in %, 0=Unset
 WC_Temperature      = float(0)  # actual Temperature Value in °C, 0=Unset
 WC_HT_Age           = 0         # age of the Humidity/Temperature Value in seconds, 0=values unset
+WC_Soll             = 0         # last known local regulator value for this vent
 
 #
 # KÜCHE
@@ -259,6 +271,7 @@ ZULUFT_Vent_Percent = 28        # the daily default Speed in %
 ZULUFT_Humidity     = float(0)  # the outdoor humidiy in %
 ZULUFT_Temperature  = float(0)  # the outdoor temperature °C
 ZULUFT_HT_Age       = 0         # age of the Humidity/Temperature Value in seconds, 0=values unset
+ZULUFT_Soll         = 0         # last known local regualtor value for this vent
 
 #
 # SYSTEM 
@@ -325,10 +338,12 @@ def trio_vent_sleep(seconds):
   seconds -= 1
 
 def pwm_vent_Z(percent):
+ global ZULUFT_Soll
  if percent>100:
   percent=100
  if percent<0:
   percent=0 
+ ZULUFT_Soll = percent 
  writef('/sys/class/pwm/pwmchip0/pwm0/duty_cycle', str(int(1000000000/PWM_FREQUENCY * percent / 100.0)))
  if percent==0:
   writef('/sys/class/pwm/pwmchip0/pwm0/enable', '0')
@@ -337,10 +352,12 @@ def pwm_vent_Z(percent):
  logger.info("MQTT" + CHAR_UP + " " + status_zuluft + " " + str(percent) + "% " + str( client.publish(local_device_id + status_zuluft, payload=percent, qos=1, retain=True)))
  
 def pwm_vent_W(percent): 
+ global WC_Soll
  if percent>100:
   percent=100
  if percent<0:
   percent=0 
+ WC_Soll = percent 
  writef('/sys/class/pwm/pwmchip0/pwm1/duty_cycle', str(int(1000000000/PWM_FREQUENCY * percent / 100.0)))
  if percent==0:
   writef('/sys/class/pwm/pwmchip0/pwm1/enable', '0')
@@ -356,6 +373,14 @@ def power_vent_K(onoff):
   logger.info("MQTT" + CHAR_UP + " " + cmd_relay + " off" + str(client.publish(device_Shelly1 + cmd_relay, payload="off", qos=1)))
   logger.info("MQTT" + CHAR_UP + " " + status_kueche + " false" + str(client.publish(local_device_id + status_kueche, payload="false", qos=1, retain=True)))
 
+def power_forecast():
+ r = POWER_IDLE
+ if KUECHE_Vent:
+  r += POWER_K
+ r += POWER_W[100-WC_Soll] 
+ r += POWER_Z[100-ZULUFT_Soll]
+ return r
+ 
 def mqtt_event_message(client, userdata, message):
 
     global KUECHE_Vent, KUECHE_Relay, WC_Light, time_OFF, nachlauf
@@ -443,7 +468,7 @@ def mqtt_event_message(client, userdata, message):
      payload = str(message.payload.decode("utf-8"))
      SYSTEM_Power = float(json5.loads(payload)["apower"])
      SYSTEM_Shelly_Temperature = float(json5.loads(payload)["temperature"]["tC"])
-     logger.info(CHAR_DOWN + "MQTT POWER " + str(SYSTEM_Power) + " W")
+     logger.info(CHAR_DOWN + "MQTT POWER " + str(SYSTEM_Power) + f" W (expected {power_forecast()} W)")
      logger.info(CHAR_DOWN + "MQTT Temp " + str(SYSTEM_Shelly_Temperature) + " °C")
      SYSTEM_Power_Age = 1
  
@@ -469,10 +494,9 @@ def mqtt_event_disconnect(client, userdata, rc):
     logger.info("MQTT event disconnect, giving up")
     exit(1)
 
-###########
-# M A I N #
-###########
-
+#----------
+# M A I N 
+#----------
 
 # Logging Setup Systemd/Console
 logger = logging.getLogger(__name__)
@@ -537,6 +561,62 @@ client.publish(local_device_id + status_version, local_rev, qos=1, retain=True)
 client.publish(local_device_id + status_online, "true", qos=1, retain=True)
 logger.info("trio-vent Rev. " + local_rev + " startup complete")
 
+#
+#
+if len(sys.argv)>=2:
+ if sys.argv[1]=="-t":
+ 
+  logger.info("start in testpower-Mode")
+  pwm_vent_Z(0)
+  pwm_vent_W(0)
+  power_vent_K(False)
+
+  # messure idle power
+  trio_vent_sleep(12)
+  with open('/root/trio-vent.txt', 'w') as f:
+    IDLE_Power = SYSTEM_Power
+    f.write(f'POWER_IDLE = {IDLE_Power:.1f}\n')
+ 
+    # messure K Vent
+    power_vent_K(True)
+    trio_vent_sleep(12)
+    K_Power = SYSTEM_Power - IDLE_Power
+    f.write(f'POWER_K = {K_Power:.1f}\n')
+    power_vent_K(False)
+    
+    # messure WC Vent 0..100
+    f.write('POWER_W = (');
+    i = 100
+    pwm_vent_W(i)
+    trio_vent_sleep(10)
+    while i>-1:
+     pwm_vent_W(i)
+     trio_vent_sleep(6)
+     W_Power = SYSTEM_Power - IDLE_Power
+     f.write(f'{W_Power:.1f}')
+     if i!=0:
+      f.write(',')
+     i -= 1
+    f.write(')\n')
+ 
+    # messure Z Vent 0..100
+    f.write('POWER_Z = (');
+    i = 100
+    pwm_vent_Z(i)
+    trio_vent_sleep(10)
+    while i>-1:
+     pwm_vent_Z(i)
+     trio_vent_sleep(6)
+     Z_Power = SYSTEM_Power - IDLE_Power
+     f.write(f'{Z_Power:.1f}')
+     if i!=0:
+      f.write(',')
+     i -= 1
+    f.write(')\n')
+ 
+  exit(0)
+
+# main loop
 while True:
 
   # Clocks
